@@ -1,0 +1,56 @@
+services:
+  importer:
+    build: .
+    image: ezbookkeeping-importer:0.1.0
+    command: ["worker"]
+    restart: unless-stopped
+    init: true
+    user: "${EBKI_UID:-10001}:${EBKI_GID:-10001}"
+    environment:
+      # 必需项由应用按命令检查；migrate 不应要求邮箱或模型凭据。
+      EBKI_DATABASE_URL: "${EBKI_DATABASE_URL-}"
+      EBKI_LEDGER_URL: "${EBKI_LEDGER_URL-}"
+      EBKI_LEDGER_TOKEN: "${EBKI_LEDGER_TOKEN-}"
+      EBKI_LEDGER_TIMEOUT_SECONDS: "${EBKI_LEDGER_TIMEOUT_SECONDS-30}"
+      EBKI_AI_URL: "${EBKI_AI_URL-}"
+      EBKI_AI_MODEL: "${EBKI_AI_MODEL-}"
+      EBKI_AI_TOKEN: "${EBKI_AI_TOKEN-}"
+      EBKI_AI_TIMEOUT_SECONDS: "${EBKI_AI_TIMEOUT_SECONDS-30}"
+      EBKI_IMAP_HOST: "${EBKI_IMAP_HOST-imap.qq.com}"
+      EBKI_IMAP_PORT: "${EBKI_IMAP_PORT-993}"
+      EBKI_IMAP_USERNAME: "${EBKI_IMAP_USERNAME-}"
+      EBKI_IMAP_PASSWORD: "${EBKI_IMAP_PASSWORD-}"
+      EBKI_IMAP_TIMEOUT_SECONDS: "${EBKI_IMAP_TIMEOUT_SECONDS-30}"
+      EBKI_EVIDENCE_DIR: "${EBKI_EVIDENCE_DIR-/app/var/evidence}"
+      EBKI_REPORT_DIR: "${EBKI_REPORT_DIR-/app/var/reports}"
+      EBKI_LOG_DIR: "${EBKI_LOG_DIR-/app/var/logs}"
+      EBKI_LOG_MAX_BYTES: "${EBKI_LOG_MAX_BYTES-10485760}"
+      EBKI_LOG_BACKUPS: "${EBKI_LOG_BACKUPS-5}"
+    volumes:
+      - type: bind
+        source: ./config.toml
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EBKI_EVIDENCE_DIR-./var/evidence}"
+        target: "${EBKI_EVIDENCE_DIR-/app/var/evidence}"
+      - type: bind
+        source: "${EBKI_REPORT_DIR-./var/reports}"
+        target: "${EBKI_REPORT_DIR-/app/var/reports}"
+      - type: bind
+        source: "${EBKI_LOG_DIR-./var/logs}"
+        target: "${EBKI_LOG_DIR-/app/var/logs}"
+    networks:
+      - bookkeeping
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  bookkeeping:
+    external: true
+    name: "${EBKI_DOCKER_NETWORK:?Set the existing PostgreSQL/ezBookkeeping Docker network}"
