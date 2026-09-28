@@ -235,22 +235,23 @@ def _download_failure(store: Store, task: dict, error_type: str, stage: str):
         store.issue("download_failed", str(task["id"]), {"error_type": error_type, "stage": stage})
 
 
-def _process_header(
-    store: Store, mail: Mail, evidence, settings, folder: str, task: dict, headers: bytes
-):
-    envelope = BytesParser(policy=policy.default).parsebytes(headers, headersonly=True)
-    sender = parseaddr(str(envelope.get("From", "")))[1].lower()
-    if not bank_candidate(sender, str(envelope.get("Subject", ""))):
-        with store.transaction():
-            store.execute(
-                "UPDATE downloads SET status='ignored',error='non-bank message' WHERE id=%s",
-                (task["id"],),
-            )
-            store.execute(
-                "UPDATE issues SET resolved=true WHERE code='download_failed' AND entity_id=%s",
-                (str(task["id"]),),
-            )
+def _ignore_downloads(store: Store, ids: list[int]):
+    if not ids:
         return
+    with store.transaction():
+        store.execute(
+            """UPDATE downloads SET status='ignored',error='non-bank message'
+            WHERE id IN (SELECT value::bigint FROM jsonb_array_elements_text(%s))""",
+            (ids,),
+        )
+        store.execute(
+            """UPDATE issues SET resolved=true WHERE code='download_failed'
+            AND entity_id IN (SELECT value FROM jsonb_array_elements_text(%s))""",
+            (ids,),
+        )
+
+
+def _process_candidate(store: Store, mail: Mail, evidence, settings, folder: str, task: dict):
     raw = mail.fetch(folder, task["uid"])
     message_id = ingest(store, evidence, raw, settings, "imap")
     with store.transaction():
@@ -338,11 +339,12 @@ def collect(
                 )
             # Persist candidate tasks before advancing the scan snapshot. Re-scanning UIDs also
             # covers moved messages; unique locations keep downloads incremental.
-            for uid in uids:
+            if uids:
                 store.execute(
                     """INSERT INTO downloads(source_id,folder,validity,uid)
-                    VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
-                    (settings.mail.source_id, folder, validity, uid),
+                    SELECT %s,%s,%s,value::bigint FROM jsonb_array_elements_text(%s)
+                    ON CONFLICT DO NOTHING""",
+                    (settings.mail.source_id, folder, validity, uids),
                 )
         selected_uids = set(uids)
         after_uid = 0
@@ -368,14 +370,28 @@ def collect(
                 for task in batch:
                     _download_failure(store, task, type(exc).__name__, "headers_batch")
                 continue
+            ignored_ids = []
+            candidates = []
             for task in batch:
                 if task["uid"] not in headers_by_uid:
                     _download_failure(store, task, "MissingHeader", "headers_batch")
                     continue
                 try:
-                    _process_header(
-                        store, mail, evidence, settings, folder, task, headers_by_uid[task["uid"]]
+                    envelope = BytesParser(policy=policy.default).parsebytes(
+                        headers_by_uid[task["uid"]], headersonly=True
                     )
+                    sender = parseaddr(str(envelope.get("From", "")))[1].lower()
+                    if bank_candidate(sender, str(envelope.get("Subject", ""))):
+                        candidates.append(task)
+                    else:
+                        ignored_ids.append(task["id"])
+                except Exception as exc:
+                    _download_failure(store, task, type(exc).__name__, "headers")
+            # Database failures propagate: rollback preserves all these locations for retry.
+            _ignore_downloads(store, ignored_ids)
+            for task in candidates:
+                try:
+                    _process_candidate(store, mail, evidence, settings, folder, task)
                 except Exception as exc:
                     _download_failure(store, task, type(exc).__name__, "message")
         if not bounded:

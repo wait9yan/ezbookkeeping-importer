@@ -97,3 +97,84 @@ def test_missing_uid_stays_failed_while_valid_partial_headers_are_processed(
     assert mail.batches == [("INBOX", (2,))]
     assert mail.fetches == [("INBOX", 3), ("INBOX", 2)]
     assert store.one("SELECT count(*) AS n FROM issues WHERE NOT resolved")["n"] == 0
+
+
+def test_non_bank_batch_uses_two_updates_and_one_bulk_registration(
+    database, settings, tmp_path, monkeypatch
+):
+    store = database.store
+    ordinary = raw_message("friend@example.test", "ordinary mail")
+    mail = BatchMail(database.connect(), {"INBOX": ("valid", dict.fromkeys(range(1, 51), ordinary))})
+    statements = []
+    execute = store.execute
+
+    def record(sql, params=()):
+        statements.append(sql)
+        return execute(sql, params)
+
+    monkeypatch.setattr(store, "execute", record)
+    collect(store, mail, EvidenceStore(tmp_path / "evidence"), settings)
+    assert len([sql for sql in statements if "INSERT INTO downloads" in sql]) == 1
+    assert len([sql for sql in statements if "UPDATE downloads" in sql]) == 1
+    assert len([sql for sql in statements if "code='download_failed'" in sql]) == 1
+    assert store.one("SELECT count(*) AS n FROM downloads WHERE status='ignored'")["n"] == 50
+    assert mail.fetches == []
+    # A repeated location snapshot is idempotent and never resets completed states.
+    collect(store, mail, EvidenceStore(tmp_path / "evidence"), settings)
+    assert store.one("SELECT count(*) AS n FROM downloads")["n"] == 50
+    assert len(mail.batches) == 1
+
+
+def test_batch_ignore_rolls_back_downloads_when_issue_update_fails(
+    database, settings, tmp_path, monkeypatch
+):
+    import pytest
+
+    store = database.store
+    ordinary = raw_message("friend@example.test", "ordinary mail")
+    mail = BatchMail(database.connect(), {"INBOX": ("valid", {1: ordinary, 2: ordinary})})
+    evidence = EvidenceStore(tmp_path / "evidence")
+    execute = store.execute
+
+    def fail(sql, params=()):
+        if "code='download_failed'" in sql:
+            raise RuntimeError("synthetic database write failure")
+        return execute(sql, params)
+
+    monkeypatch.setattr(store, "execute", fail)
+    with pytest.raises(RuntimeError, match="synthetic database"):
+        collect(store, mail, evidence, settings)
+    assert {row["status"] for row in store.all("SELECT status FROM downloads")} == {"pending"}
+    assert store.one("SELECT historical_complete FROM cursors")["historical_complete"] is False
+    monkeypatch.setattr(store, "execute", execute)
+    collect(store, mail, evidence, settings)
+    assert {row["status"] for row in store.all("SELECT status FROM downloads")} == {"ignored"}
+    assert store.one("SELECT historical_complete FROM cursors")["historical_complete"] is True
+
+
+def test_bulk_registration_failure_rolls_back_cursor_and_retries(
+    database, settings, tmp_path, monkeypatch
+):
+    import pytest
+
+    store = database.store
+    ordinary = raw_message("friend@example.test", "ordinary mail")
+    mail = BatchMail(database.connect(), {"INBOX": ("valid", {1: ordinary, 2: ordinary})})
+    evidence = EvidenceStore(tmp_path / "evidence")
+    execute = store.execute
+
+    def fail(sql, params=()):
+        result = execute(sql, params)
+        if "INSERT INTO downloads" in sql:
+            raise RuntimeError("synthetic registration failure")
+        return result
+
+    monkeypatch.setattr(store, "execute", fail)
+    with pytest.raises(RuntimeError, match="synthetic registration"):
+        collect(store, mail, evidence, settings)
+    assert store.one("SELECT count(*) AS n FROM cursors")["n"] == 0
+    assert store.one("SELECT count(*) AS n FROM downloads")["n"] == 0
+    assert mail.batches == []
+    monkeypatch.setattr(store, "execute", execute)
+    collect(store, mail, evidence, settings)
+    assert store.one("SELECT count(*) AS n FROM downloads WHERE status='ignored'")["n"] == 2
