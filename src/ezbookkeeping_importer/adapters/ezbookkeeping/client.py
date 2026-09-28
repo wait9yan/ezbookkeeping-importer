@@ -103,13 +103,6 @@ class EzBookkeepingClient:
             [item for group in groups.values() for item in _objects(group)], "subCategories"
         )
 
-    def rates(self) -> dict:
-        result = _object(self._request("GET", "exchange_rates/latest.json"))
-        if not {"dataSource", "updateTime", "baseCurrency", "exchangeRates"} <= result.keys():
-            raise LedgerError("Incomplete exchange rate response")
-        _objects(result["exchangeRates"])
-        return result
-
     @staticmethod
     def _transaction(value: Any) -> dict:
         result = _object(value)

@@ -220,6 +220,9 @@ class PostgresStore:
             (code, entity_id, Jsonb(data)),
         )
 
+    def is_connection_usable(self) -> bool:
+        return not self.connection.closed and not self.connection.broken
+
     def lock_worker(self) -> bool:
         return self.one("SELECT pg_try_advisory_lock(780417) AS locked")["locked"]
 

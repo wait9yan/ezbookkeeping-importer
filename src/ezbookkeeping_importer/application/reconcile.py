@@ -1,9 +1,12 @@
 import hashlib
 import json
 import os
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..domain.money import cents
+from ..domain.accounts import decision_currency, legacy_cny_estimate, recordable
 from decimal import Decimal
 from .ports import Ledger, Store
 
@@ -12,33 +15,91 @@ def normalized(value: str) -> str:
     return "".join(value.split()).casefold()
 
 
-def candidates_for(row: dict, transactions: list[dict]) -> list[dict]:
+HISTORY_RECHECK_INTERVAL = timedelta(hours=1)
+QUERY_RETRY_INTERVAL = timedelta(minutes=10)
+CHECKPOINT_KEY = "reconciliation-checkpoint"
+CHANGE_EVENTS = (
+    "mail_parsed",
+    "write_confirmed",
+    "issue_resolved",
+    "classification_decided",
+    "existing_source_recovered",
+    "write_interrupted",
+)
+
+
+def match_key(row: dict) -> tuple:
+    if row["event_type"] == "repayment":
+        return ("repayment", row["occurred_date"], Decimal(row["original_amount"]))
     if row["event_type"] == "statement" and "自动还款" in row["merchant_raw"]:
-        return [
-            t
-            for t in transactions
-            if t["facts"]["event_type"] == "repayment"
-            and t["facts"]["occurred_date"] == row["occurred_date"]
-            and Decimal(t["facts"]["original_amount"]) == abs(Decimal(row["settlement_amount"]))
-        ]
-    return [
-        t
-        for t in transactions
-        if t["facts"]["event_type"] == row["event_type"]
-        and t["facts"]["occurred_date"] == row["occurred_date"]
-        and t["facts"]["card_reference"] == row["card_reference"]
-        and Decimal(t["facts"]["original_amount"]) == Decimal(row["original_amount"])
-        and normalized(t["facts"]["merchant_raw"]) == normalized(row["merchant_raw"])
-    ]
+        return ("repayment", row["occurred_date"], abs(Decimal(row["settlement_amount"])))
+    return (
+        row["event_type"],
+        row["occurred_date"],
+        (row["card_reference"] or "")[-4:],
+        Decimal(row["original_amount"]),
+        normalized(row["merchant_raw"]),
+    )
+
+
+def candidate_index(transactions: list[dict]) -> dict[tuple, list[dict]]:
+    index: dict[tuple, list[dict]] = defaultdict(list)
+    for transaction in transactions:
+        index[match_key(transaction["facts"])].append(transaction)
+    return index
+
+
+def reconcile_if_due(
+    store: Store, ledger: Ledger, report_dir: Path, now: datetime | None = None
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    # Counting committed audit rows also detects an earlier sequence ID that commits
+    # after a later one; a max-ID-only watermark would miss that concurrent change.
+    placeholders = ",".join("%s" for _ in CHANGE_EVENTS)
+    change = store.one(
+        f"""SELECT
+        (SELECT count(*) FROM audit_events WHERE event IN ({placeholders})) AS audit_count,
+        (SELECT count(*) FROM reports) AS report_count""",
+        CHANGE_EVENTS,
+    )
+    if change is None:
+        raise RuntimeError("reconciliation change signal missing")
+    checkpoint = store.one("SELECT * FROM jobs WHERE operation_key=%s", (CHECKPOINT_KEY,))
+    if checkpoint:
+        saved = checkpoint["payload"]
+        if saved["change"] == change and now < datetime.fromisoformat(saved["next_check_at"]):
+            return False
+    queries_succeeded = reconcile(store, ledger, report_dir)
+    interval = HISTORY_RECHECK_INTERVAL if queries_succeeded else QUERY_RETRY_INTERVAL
+    payload = {
+        "change": change,
+        "completed_at": now.isoformat(),
+        "next_check_at": (now + interval).isoformat(),
+        "queries_succeeded": queries_succeeded,
+    }
+    with store.transaction():
+        store.execute(
+            """INSERT INTO jobs(kind,operation_key,payload,status)
+            VALUES ('reconcile_checkpoint',%s,%s,'done') ON CONFLICT(operation_key)
+            DO UPDATE SET payload=excluded.payload,status='done',updated_at=now()""",
+            (CHECKPOINT_KEY, payload),
+        )
+    return True
 
 
 def reconcile(store: Store, ledger: Ledger, report_dir: Path):
     report_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     transactions = store.all("SELECT * FROM transactions")
+    index = candidate_index(transactions)
+    queries_succeeded = True
+    accounts = None
     for report in store.all("SELECT * FROM reports WHERE kind='monthly'"):
         results = []
         rows = report["parsed"]["rows"]
-        candidate_map = {r["row_key"]: candidates_for(r, transactions) for r in rows}
+        candidate_map = {r["row_key"]: index.get(match_key(r), []) for r in rows}
+        candidate_counts = Counter(
+            t["id"] for candidates in candidate_map.values() for t in candidates
+        )
         for row in rows:
             data = {
                 "report_key": report["report_key"],
@@ -56,10 +117,7 @@ def reconcile(store: Store, ledger: Ledger, report_dir: Path):
                 transaction = candidates[0]
                 data["transaction_id"] = transaction["id"]
                 # The inverse uniqueness check prevents two statement rows consuming one daily row.
-                if (
-                    sum(transaction["id"] in {t["id"] for t in c} for c in candidate_map.values())
-                    > 1
-                ):
+                if candidate_counts[transaction["id"]] > 1:
                     status = "ambiguous"
                 elif not transaction["target_id"]:
                     status = "import_pending"
@@ -67,26 +125,55 @@ def reconcile(store: Store, ledger: Ledger, report_dir: Path):
                     data["target_id"] = transaction["target_id"]
                     try:
                         current = ledger.get(transaction["target_id"])
-                        amount = cents(Decimal(row["settlement_amount"]))
-                        if transaction["facts"]["event_type"] == "repayment":
+                        currency = decision_currency(transaction)
+                        legacy_estimate = legacy_cny_estimate(transaction)
+                        is_repayment = transaction["facts"]["event_type"] == "repayment"
+                        data["bank_settlement"] = {
+                            "amount": row["settlement_amount"],
+                            "currency": row["settlement_currency"],
+                        }
+                        amount = cents(
+                            Decimal(
+                                row["settlement_amount"]
+                                if legacy_estimate
+                                or is_repayment
+                                or currency == row["settlement_currency"]
+                                else row["original_amount"]
+                            )
+                        )
+                        if is_repayment:
                             amount = abs(amount)
+                        data["comparison_currency"] = currency
+                        data["comparison_amount"] = amount
                         payload = (transaction["decision"] or {}).get("payload", {})
+                        if accounts is None:
+                            accounts = {
+                                str(account["id"]): account for account in ledger.accounts()
+                            }
+                        target_account = (
+                            accounts.get(str(current.get("sourceAccountId"))) if current else None
+                        )
                         if current is None:
                             status = "target_missing"
-                        elif str(current.get("sourceAccountId")) != str(
-                            payload.get("sourceAccountId")
-                        ) or current.get("type") != payload.get("type"):
-                            status = (
-                                "settlement_target_invalid"
-                                if transaction["facts"]["original_currency"] != "CNY"
-                                else "target_changed"
-                            )
                         elif (
-                            transaction["facts"]["original_currency"] != "CNY"
-                            and transaction["facts"]["event_type"] == "expense"
+                            str(current.get("sourceAccountId"))
+                            != str(payload.get("sourceAccountId"))
+                            or current.get("type") != payload.get("type")
+                            or not target_account
+                            or not recordable(target_account)
+                            or target_account.get("currency") != currency
                         ):
                             status = (
-                                "matched"
+                                "settlement_target_invalid" if legacy_estimate else "target_changed"
+                            )
+                        elif legacy_estimate:
+                            date_changed = current.get("time") != payload.get("time")
+                            data["date_changed"] = date_changed
+                            data["expected_time"] = payload.get("time")
+                            status = (
+                                "target_changed"
+                                if date_changed
+                                else "matched"
                                 if current["sourceAmount"] == amount
                                 else "target_changed"
                                 if transaction["settlement"]
@@ -133,11 +220,20 @@ def reconcile(store: Store, ledger: Ledger, report_dir: Path):
                                     and str(current.get("destinationAccountId"))
                                     == str(payload.get("destinationAccountId"))
                                     and current.get("destinationAmount") == amount
+                                    and bool(accounts.get(str(current.get("destinationAccountId"))))
+                                    and accounts[str(current.get("destinationAccountId"))].get(
+                                        "currency"
+                                    )
+                                    == currency
+                                    and recordable(
+                                        accounts[str(current.get("destinationAccountId"))]
+                                    )
                                 )
                             status = "matched" if fields_match else "target_changed"
                         data["observed"] = current
                     except Exception as exc:
                         status = "query_failed"
+                        queries_succeeded = False
                         data["error_type"] = type(exc).__name__
             data["candidate_ids"] = [c["id"] for c in candidates]
             with store.transaction():
@@ -189,6 +285,7 @@ def reconcile(store: Store, ledger: Ledger, report_dir: Path):
                             status = "target_missing"
                     except Exception as exc:
                         status = "query_failed"
+                        queries_succeeded = False
                         data["error_type"] = type(exc).__name__
                 elif transaction["state"] not in {"ignored", "booked"}:
                     status = "import_pending"
@@ -205,6 +302,11 @@ def reconcile(store: Store, ledger: Ledger, report_dir: Path):
                             report["report_key"] + ":" + reverse_key,
                             {"status": status, **data},
                         )
+                    else:
+                        store.execute(
+                            "UPDATE issues SET resolved=true WHERE code='reconciliation' AND entity_id=%s",
+                            (report["report_key"] + ":" + reverse_key,),
+                        )
                 results.append({"status": status, **data})
         filename = hashlib.sha256(report["report_key"].encode()).hexdigest() + ".json"
         target = report_dir / filename
@@ -213,3 +315,5 @@ def reconcile(store: Store, ledger: Ledger, report_dir: Path):
         with os.fdopen(fd, "w") as file:
             json.dump(results, file, ensure_ascii=False, indent=2)
         temp.replace(target)
+
+    return queries_succeeded

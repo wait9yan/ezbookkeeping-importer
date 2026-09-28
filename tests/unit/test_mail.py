@@ -68,20 +68,41 @@ def test_all_folders_and_historical_uids_readonly_peek():
     imap.close()
 
 
-def test_fetch_mismatched_uid_is_error():
+@pytest.mark.parametrize("method", ["fetch", "fetch_headers"])
+def test_fetch_mismatched_uid_is_error(method):
     imap = client()
     imap.snapshot("INBOX")
     with pytest.raises(ValueError, match="mismatch"):
-        imap.fetch("INBOX", 11)
+        getattr(imap, method)("INBOX", 11)
 
 
-def test_uidvalidity_change_prevents_reading_wrong_message():
+@pytest.mark.parametrize("method", ["fetch", "fetch_headers"])
+def test_uidvalidity_change_prevents_reading_wrong_message(method):
     imap = client()
     imap.snapshot("INBOX")
     imap.connection.response = lambda code: (code, [b"98765"])
     with pytest.raises(ValueError, match="UIDVALIDITY changed"):
-        imap.fetch("INBOX", 10)
+        getattr(imap, method)("INBOX", 10)
     assert not any(call[0] == "FETCH" for call in imap.connection.calls)
+
+
+def test_header_fetch_is_readonly_and_does_not_request_body():
+    imap = client()
+    imap.scan("INBOX")
+    assert imap.fetch_headers("INBOX", 10) == b"raw"
+    assert ("FETCH", "10", "(UID BODY.PEEK[HEADER])") in imap.connection.calls
+    assert ("FETCH", "10", "(UID BODY.PEEK[])") not in imap.connection.calls
+    assert all(call[2] for call in imap.connection.calls if call[0] == "select")
+
+
+def test_validity_change_between_headers_and_body_prevents_full_download():
+    imap = client()
+    imap.scan("INBOX")
+    imap.fetch_headers("INBOX", 10)
+    imap.connection.response = lambda code: (code, [b"98765"])
+    with pytest.raises(ValueError, match="UIDVALIDITY changed"):
+        imap.fetch("INBOX", 10)
+    assert ("FETCH", "10", "(UID BODY.PEEK[])") not in imap.connection.calls
 
 
 def test_incremental_search_excludes_star_range_old_uid():

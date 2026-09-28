@@ -3,7 +3,8 @@
 import re
 
 from ..domain.errors import ImporterError, LedgerRejected
-from .classify import validate_target
+from .classify import validate_target, validate_accounts
+from ..domain.accounts import decision_currency, legacy_cny_estimate
 from .ports import Ledger, Store
 
 
@@ -81,6 +82,13 @@ def complete(store: Store, job: dict, current: dict):
             "UPDATE issues SET resolved=true WHERE entity_id=%s AND code IN ('write_unknown','write_rejected','verification_failed')",
             (job["transaction_id"],),
         )
+        # Versionless legacy issues can be attributed only while the operation is still
+        # on its first version. Reused jobs cannot prove which older decision failed.
+        store.execute(
+            """UPDATE issues SET resolved=true WHERE entity_id=%s AND code='write_preflight_failed'
+            AND data->>'job_id'=%s AND (data->>'version'=%s OR (NOT (data ? 'version') AND %s=1))""",
+            (job["transaction_id"], str(job["id"]), str(job["version"]), job["version"]),
+        )
         store.audit(
             "write_confirmed",
             job["transaction_id"],
@@ -91,15 +99,18 @@ def complete(store: Store, job: dict, current: dict):
 def verify_unknown(store: Store, ledger: Ledger):
     for job in store.all("SELECT * FROM jobs WHERE status='unknown' ORDER BY id"):
         try:
+            transaction = store.one(
+                "SELECT * FROM transactions WHERE id=%s", (job["transaction_id"],)
+            )
+            if not transaction:
+                raise ImporterError("missing transaction for write operation")
+            currency = decision_currency(transaction)
+            if job["kind"] == "settle_amount" and not legacy_cny_estimate(transaction):
+                raise ImporterError("settlement is limited to legacy CNY estimates")
             if job["target_id"]:
                 current = ledger.get(job["target_id"])
             else:
                 payload = job["payload"]
-                transaction = store.one(
-                    "SELECT marker FROM transactions WHERE id=%s", (job["transaction_id"],)
-                )
-                if not transaction:
-                    raise ImporterError("missing transaction for write operation")
                 marker = transaction["marker"]
                 candidates = ledger.search(payload["time"] - 86400, payload["time"] + 86400, marker)
                 candidates = [
@@ -126,6 +137,7 @@ def verify_unknown(store: Store, ledger: Ledger):
                 and matches(current, job["payload"])
                 and (job["kind"] != "create" or current.get("time") == job["payload"].get("time"))
             ):
+                validate_accounts(ledger, current, currency)
                 complete(store, job, current)
             else:
                 store.issue(
@@ -141,6 +153,29 @@ def verify_unknown(store: Store, ledger: Ledger):
             )
 
 
+def record_preflight_failure(store: Store, candidate: dict, error: Exception):
+    with store.transaction():
+        transaction = store.one(
+            "SELECT * FROM transactions WHERE id=%s FOR UPDATE", (candidate["transaction_id"],)
+        )
+        current = store.one("SELECT * FROM jobs WHERE id=%s FOR UPDATE", (candidate["id"],))
+        if not transaction or not current or current["status"] != "queued":
+            return
+        if transaction["state"] != "queued" or not (
+            transaction["version"] == current["version"] == candidate["version"]
+        ):
+            return
+        store.issue(
+            "write_preflight_failed",
+            candidate["transaction_id"],
+            {
+                "job_id": candidate["id"],
+                "version": candidate["version"],
+                "error_type": type(error).__name__,
+            },
+        )
+
+
 def write_queued(store: Store, ledger: Ledger, enabled: bool):
     verify_unknown(store, ledger)
     if not enabled:
@@ -149,8 +184,16 @@ def write_queued(store: Store, ledger: Ledger, enabled: bool):
         "SELECT * FROM jobs WHERE status='queued' AND kind IN ('create','settle_amount') ORDER BY id"
     ):
         try:
+            transaction = store.one(
+                "SELECT * FROM transactions WHERE id=%s", (candidate["transaction_id"],)
+            )
+            if not transaction:
+                raise ImporterError("missing transaction for write operation")
+            currency = decision_currency(transaction)
             payload = candidate["payload"]
             if candidate["kind"] == "settle_amount":
+                if not legacy_cny_estimate(transaction):
+                    raise ImporterError("settlement is limited to legacy CNY estimates")
                 current = ledger.get(candidate["target_id"])
                 if (
                     not current
@@ -158,17 +201,14 @@ def write_queued(store: Store, ledger: Ledger, enabled: bool):
                     or str(current.get("sourceAccountId")) != str(payload["sourceAccountId"])
                 ):
                     raise ImporterError("settlement_target_invalid")
+                validate_accounts(ledger, current, currency)
                 if matches(current, payload):
                     complete(store, candidate, current)
                     continue
                 payload = ledger.settlement_payload(current, payload["sourceAmount"])
-            validate_target(ledger, payload)
+            validate_target(ledger, payload, currency)
         except Exception as exc:
-            store.issue(
-                "write_preflight_failed",
-                candidate["transaction_id"],
-                {"job_id": candidate["id"], "error_type": type(exc).__name__},
-            )
+            record_preflight_failure(store, candidate, exc)
             continue
         with store.transaction():
             transaction = store.one(

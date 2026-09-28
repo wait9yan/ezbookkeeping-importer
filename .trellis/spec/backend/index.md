@@ -9,6 +9,9 @@
 | [配置入口](configuration.md) | 环境变量、业务 TOML、命令依赖与迁移 | 已统一配置契约 |
 | [目录结构](directory-structure.md) | 模块和依赖边界 | 已按首期实现更新 |
 | [数据库](database-guidelines.md) | PostgreSQL 事务、任务领取和迁移 | 已按首期实现更新 |
+| [QQ 来源接纳](qq-source-authentication.md) | QQ 收件节点、认证服务及认证头结构 | 实际样本与拒绝路径已验证 |
+| [卡号匹配与原币入账](account-matching.md) | 账户描述匹配、目标币种冻结与历史决定兼容 | 本轮实现契约 |
+| [恢复与调度](recovery-and-scheduling.md) | 重试冻结事实、断连退出、邮件头预筛选与核对检查点 | 已有回归覆盖 |
 | [错误处理](error-handling.md) | 明确拒绝、结果不明和恢复 | 已按首期实现更新 |
 | [质量验证](quality-guidelines.md) | 测试、静态检查和构建 | 已按首期实现更新 |
 | [日志](logging-guidelines.md) | JSONL、轮转、脱敏及失败行为 | 已按首期实现更新 |

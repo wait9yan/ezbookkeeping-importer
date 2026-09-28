@@ -42,6 +42,13 @@ def run(runtime, once: bool = False):
             if once and not success:
                 raise ImporterError("synchronization failed; persisted tasks were still processed")
         except Exception as exc:
+            if not runtime.store.is_connection_usable():
+                logger.error(
+                    "worker_database_disconnected", extra={"error_type": type(exc).__name__}
+                )
+                raise ImporterError(
+                    "database connection lost; restart the worker to reacquire its lock and verify interrupted writes"
+                ) from None
             logger.error("cycle_failed", extra={"error_type": type(exc).__name__})
             if once:
                 raise

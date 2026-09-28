@@ -4,18 +4,17 @@
 
 ## 适用场景与接口
 
-账本适配器集中实现账户、分类、汇率、交易查询及写入。应用层通过 `Ledger` 能力接口注入依赖，不在银行解析器或 CLI 中直接发起写账请求。
+账本适配器集中实现账户、分类、交易查询及写入。应用层通过 `Ledger` 能力接口注入依赖，不在银行解析器或 CLI 中直接发起写账请求。
 
 | 接口 | 关键契约 |
 | --- | --- |
 | `GET /api/v1/accounts/list.json` | 数组，账户 ID 为字符串，递归处理 `subAccounts`；多子账户父节点不能记账。 |
 | `GET /api/v1/transaction/categories/list.json` | 按类型分组的对象，组内数组包含 `subCategories`；子级继承父级隐藏状态。 |
-| `GET /api/v1/exchange_rates/latest.json` | 包含 `dataSource/updateTime/baseCurrency/exchangeRates`；报价数组中 `rate` 为字符串。 |
 | `GET /api/v1/transactions/get.json` | `id` 字符串，结算前须 `with_pictures=true`。 |
 | `GET /api/v1/transactions/list.json` | `count<=50`，`min_time/max_time` 为内部毫秒序列，按 `nextTimeSequenceId` 继续查询，不能仅查第一页。 |
 | `GET /api/v1/transactions/list/all.json` | `start_time/end_time` 为 Unix 秒，响应为完整数组，不能套用分页包装。 |
 | `POST /api/v1/transactions/add.json` | 单笔创建，`sourceAmount` 为整数分，ID 字段为字符串。 |
-| `POST /api/v1/transactions/modify.json` | 完整修改请求；本应用仅用于已跟踪外币暂估的结算金额修正。 |
+| `POST /api/v1/transactions/modify.json` | 完整修改请求；本应用仅用于历史已跟踪人民币暂估的结算金额修正。 |
 
 全部请求携带 Bearer Token、`X-Timezone-Name: Asia/Shanghai` 和 `X-Timezone-Offset: 480`。Token 由环境或秘密挂载传入，不写入配置示例或日志。
 
@@ -23,11 +22,11 @@
 
 - 支出交易 `type=3`，对应支出分类 `type=2`；还款转账交易 `type=4`，转账分类 `type=3`。
 - 明确的日报退款写负支出，不转成普通收入或再次取负。
-- `sourceAmount=1234` 表示 `12.34`，不经 `float`。来源金额超两位小数明确失败；外币换算按 Decimal 交叉汇率、`ROUND_HALF_UP` 保留两位后转分。
-- 账户决定币种；外币消费按计划换算为 CNY，不能将 USD 数值直接写人民币账户。
+- `sourceAmount=1234` 表示 `12.34`，不经 `float`。来源金额超两位小数明确失败；新交易以原币整数分入同币账户。
+- 账户决定币种；按账户描述卡号及原币唯一匹配，新 USD 消费记入 USD 账户。已有 CNY 暂估决定只按冻结的旧契约恢复，不能将 USD 数值写人民币账户或反向混写。
 - 临时分类必须唯一匹配完整路径 `其他杂项 → 待分类`，验证父子可见、二级及支出类型，不自动创建替代分类。
 
-## 完整结算更新
+## 历史人民币暂估的完整结算更新
 
 回读当前交易，保留 `type/categoryId/time/utcOffset/sourceAccountId/destinationAccountId/destinationAmount/hideAmount/tagIds/comment/geoLocation`，将 `pictures[].pictureId` 转换成 `pictureIds`，只修改 `sourceAmount`。不能用首次导入快照覆盖用户后续分类和备注。目标不存在或不再是有效 CNY 支出时明确失败，不重建。
 
@@ -41,7 +40,6 @@
 | 明确交易不存在 | 表达目标缺失，不能将其当作成功或自动重新创建。 |
 | 网络错误、5xx、非法成功响应、重复请求结果无法核实 | 写操作结果不明，留在 UNKNOWN 并回读核实，不自动重发。 |
 | 明确业务拒绝 | 保留错误码和原操作身份，修正后按决定版本重试。 |
-| 缺汇率、非正报价、过期报价 | 明确错误，不使用 1:1 或模型猜测。 |
 | 分类隐藏、删除、类型变化 | 发送前再次校验，拒绝使用过期映射。 |
 
 ## 必需验证
@@ -53,3 +51,5 @@
 5. 不存在、查询失败与重复来源标识多候选必须分开表达。
 
 本地真实验证记录见当前任务 `research/implementation-api-review.md`；生产邮箱、模型服务和生产账本接通需另有实际证据。
+
+新原币决定的核对及币种校验见 [卡号匹配与原币入账](account-matching.md)；USD 账户不会被月账单人民币结算数值覆盖。

@@ -1,7 +1,8 @@
 from ..domain.errors import Conflict, ImporterError
 from .ports import Ledger, Store
 from .write import matches
-from .classify import validate_target
+from .classify import validate_accounts
+from ..domain.accounts import decision_currency, legacy_cny_estimate
 
 
 def resolve(
@@ -24,6 +25,11 @@ def resolve(
     target = (
         ledger.get(target_id) if action == "link" and target_id and ledger is not None else None
     )
+    if action == "link" and target is not None:
+        transaction = store.one("SELECT * FROM transactions WHERE id=%s", (issue["entity_id"],))
+        if transaction and (transaction.get("decision") or {}).get("payload"):
+            assert ledger is not None
+            validate_accounts(ledger, target, decision_currency(transaction))
     corrected_payload = None
     if account_id:
         transaction = store.one("SELECT * FROM transactions WHERE id=%s", (issue["entity_id"],))
@@ -37,7 +43,7 @@ def resolve(
             raise ImporterError("account correction is allowed only before creation with retry")
         corrected_payload = {**decision["payload"], "sourceAccountId": account_id}
         assert ledger is not None
-        validate_target(ledger, corrected_payload)
+        validate_accounts(ledger, corrected_payload, decision_currency(transaction))
     with store.transaction():
         issue = store.one("SELECT * FROM issues WHERE id=%s FOR UPDATE", (issue_id,))
         if not issue:
@@ -91,7 +97,14 @@ def resolve(
             state = "ignored" if action == "ignore" else "booked" if action == "link" else "pending"
             decision = transaction["decision"] or {}
             if corrected_payload:
-                decision = {**decision, "payload": corrected_payload}
+                decision = {
+                    **decision,
+                    "payload": corrected_payload,
+                    "account_override": {
+                        "account_id": account_id,
+                        "currency": decision_currency(transaction),
+                    },
+                }
             if action == "confirm-new":
                 decision = {**decision, "allow_new": True}
             failed_settlement = store.one(
@@ -99,11 +112,15 @@ def resolve(
                 (entity_id,),
             )
             if action == "retry" and failed_settlement:
+                if not legacy_cny_estimate(transaction):
+                    raise ImporterError("settlement retry is limited to legacy CNY estimates")
                 state = "queued"
                 store.execute(
                     "UPDATE jobs SET status='queued',version=%s,error=NULL WHERE id=%s",
                     (version + 1, failed_settlement["id"]),
                 )
+            elif action == "retry" and not transaction["target_id"] and decision.get("payload"):
+                decision = {**decision, "reclassify_requested": True}
             store.execute(
                 "UPDATE transactions SET version=version+1,state=%s,target_id=%s,decision=%s WHERE id=%s",
                 (

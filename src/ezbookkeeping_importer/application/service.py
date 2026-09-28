@@ -4,7 +4,7 @@ from .collect import collect
 from .parse import parse_pending
 from .classify import classify_pending
 from .write import write_queued
-from .reconcile import reconcile
+from .reconcile import reconcile_if_due as reconcile
 
 
 def cycle(runtime, logger):

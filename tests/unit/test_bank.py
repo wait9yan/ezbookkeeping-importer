@@ -166,3 +166,16 @@ def test_forward_prefix_is_normalized_but_original_subject_preserved():
         source_policy="qq_authentication_results", trusted_authserv_id="mx.qq.com"
     )
     assert source_status(raw, settings, "imap")[0] == "requires_acceptance"
+
+
+def test_explicit_full_card_field_is_preserved_for_exact_account_matching():
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["Subject"] = "每日信用管家"
+    message.set_content(
+        "<p>2026/01/01 您的消费明细如下：</p><b>12:00:00</b><b>USD 10.00</b><b>卡号4444333322221234 消费 合成商户</b>",
+        subtype="html",
+    )
+    parsed = BankParser().parse(message.as_bytes())
+    assert not parsed.issues and parsed.rows[0].card_reference == "4444333322221234"

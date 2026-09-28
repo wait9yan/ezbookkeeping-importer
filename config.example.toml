@@ -20,9 +20,7 @@ source_policy = "manual_acceptance"
 # 若选用 qq_authentication_results，须先确认生产 QQ 接收链与可信认证头。
 # source_policy = "qq_authentication_results"
 # trusted_authserv_id = "mx.qq.com"
-
-# 报价可接受时效需要明确填写；未配置时外币换算将报错，不能猜测汇率。
-# exchange_rate_max_age_hours = 72
+# 认证服务固定 mx.qq.com；顶层 Received 收件主机独立校验 qq.com 域边界。
 
 # 若明确只使用规则分类，可改成 rules_only；AI缺少配置不会冒充有效unmatched。
 classification_mode = "ai"
@@ -31,21 +29,11 @@ classification_mode = "ai"
 # 同一逻辑邮箱保持 source_id 稳定，避免破坏采集位置身份。
 source_id = "qq-primary"
 
-# 账户 ID 取自 ezBookkeeping；人民币和美元原币消费均映射到实际人民币账户。
-# 生效日期必须根据真实历史填写，不可把今天账户关系覆盖到换卡之前。
-# 同一卡片、原币和日期只能命中一个映射。以下均是待填写示例。
-# [[accounts]]
-# card_reference = "YOUR_CARD_REFERENCE"
-# currency = "CNY"
-# account_id = "YOUR_CNY_ACCOUNT_ID"
-# valid_from = 2020-01-01
-# valid_until = 2025-12-31
-#
-# [[accounts]]
-# card_reference = "YOUR_CARD_REFERENCE"
-# currency = "USD"
-# account_id = "YOUR_CNY_ACCOUNT_ID"
-# valid_from = 2020-01-01
+# 消费账户从 ezBookkeeping 账户描述（comment）中的银行卡号自动匹配。
+# 支持 12–19 位完整卡号，可用空格或连字符分组；邮件仅有尾号时匹配末四位。
+# 仅选择可见、可记账且币种与邮件原币一致的账户；必须唯一匹配。
+# 不配置 [[accounts]]，不自动跨币种换算。美元消费需要同一卡号的 USD 子账户。
+# 账户描述或币种变化不自动重写已经生成的决定。
 
 # 还款邮件没有账户尾号，必须按历史生效区间配置唯一付款/信用卡账户对。
 # 分类必须为可用二级转账分类。还需确认 date_only_time 和还款渠道归属。

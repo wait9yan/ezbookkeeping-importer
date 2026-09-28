@@ -41,14 +41,6 @@ class MailSettings(StrictModel):
         return value
 
 
-class AccountMapping(StrictModel):
-    card_reference: str
-    currency: str
-    account_id: str
-    valid_from: date
-    valid_until: date | None = None
-
-
 class RepaymentMapping(StrictModel):
     source_account_id: str
     destination_account_id: str
@@ -77,13 +69,11 @@ class Settings(StrictModel):
     historical_boundary_reviewed: bool = False
     refund_ownership_confirmed: bool = False
     repayment_ownership_confirmed: bool = False
-    exchange_rate_max_age_hours: int | None = Field(default=None, gt=0)
     evidence_dir: Path = Path("var/evidence")
     report_dir: Path = Path("var/reports")
     log_dir: Path = Path("var/logs")
     log_max_bytes: int = Field(default=10_485_760, gt=0)
     log_backups: int = Field(default=5, ge=1)
-    accounts: tuple[AccountMapping, ...] = ()
     repayments: tuple[RepaymentMapping, ...] = ()
     rules: tuple[Rule, ...] = ()
     classification_mode: str = "ai"
@@ -292,6 +282,17 @@ def load_settings(
         raise ConfigurationError("business configuration: invalid TOML syntax") from None
     except OSError:
         raise ConfigurationError("business configuration file cannot be read") from None
+    retired = []
+    if "accounts" in data:
+        retired.append(
+            "accounts -> remove this mapping and put card numbers in ezBookkeeping account comments"
+        )
+    if "exchange_rate_max_age_hours" in data:
+        retired.append(
+            "exchange_rate_max_age_hours -> remove; new imports use original-currency accounts without conversion"
+        )
+    if retired:
+        raise ConfigurationError("retired TOML settings: " + "; ".join(retired))
     moved = []
     for field, variable in ENV_FIELDS.items():
         parts = field.split(".")

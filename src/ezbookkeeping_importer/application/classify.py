@@ -4,7 +4,8 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from ..domain.errors import ImporterError
-from ..domain.money import cents, convert_cny
+from ..domain.money import cents
+from ..domain.accounts import AccountMatchError, match_account, decision_currency
 from .ports import Classifier, Ledger, Store
 
 
@@ -20,7 +21,7 @@ def category_valid(category: dict, category_type: int) -> bool:
     )
 
 
-def validate_target(ledger: Ledger, payload: dict):
+def validate_accounts(ledger: Ledger, payload: dict, currency: str):
     accounts = {str(a["id"]): a for a in ledger.accounts()}
     for key in ("sourceAccountId", "destinationAccountId"):
         if key not in payload or str(payload[key]) == "0":
@@ -30,13 +31,76 @@ def validate_target(ledger: Ledger, payload: dict):
             not account
             or account.get("hidden")
             or int(account.get("type", 0)) != 1
-            or account.get("currency") != "CNY"
+            or account.get("currency") != currency
         ):
-            raise ImporterError("target account must be a visible, recordable CNY account")
+            raise ImporterError(
+                "target account must be visible, recordable and use the frozen target currency"
+            )
+
+
+def validate_target(ledger: Ledger, payload: dict, currency: str):
+    validate_accounts(ledger, payload, currency)
     categories = {str(c["id"]): c for c in ledger.categories()}
     category = categories.get(str(payload["categoryId"]))
     if not category or not category_valid(category, 3 if payload["type"] == 4 else 2):
         raise ImporterError("category missing, hidden or incompatible")
+
+
+def classify_expense(transaction: dict, settings, ledger: Ledger, ai: Classifier | None):
+    facts = transaction["facts"]
+    categories = ledger.categories()
+    eligible = [c for c in categories if category_valid(c, 2)]
+    fallback = [c for c in eligible if c.get("path") == "其他杂项 → 待分类"]
+    if len(fallback) != 1:
+        raise ImporterError("fallback category path must resolve uniquely: 其他杂项 → 待分类")
+    fallback_id = str(fallback[0]["id"])
+    matched_rules = {
+        r.category_id
+        for r in settings.rules
+        if re.search(r.merchant_pattern, facts["merchant_raw"])
+    }
+    if len(matched_rules) > 1:
+        raise ImporterError("merchant rules conflict")
+    if matched_rules:
+        category_id = matched_rules.pop()
+        classification = {
+            "classification_status": "matched",
+            "reason": "merchant_rule",
+            "category_id": category_id,
+        }
+    elif ai and settings.classification_mode == "ai":
+        classification = ai.classify(
+            transaction["id"],
+            facts["merchant_raw"],
+            [c for c in eligible if str(c["id"]) != fallback_id],
+        )
+        category_id = (
+            str(classification["category_id"])
+            if classification["classification_status"] == "matched"
+            else fallback_id
+        )
+    elif settings.classification_mode == "rules_only":
+        category_id = fallback_id
+        classification = {
+            "classification_status": "unmatched",
+            "category_id": None,
+            "reason": "no matching rule; AI not configured",
+        }
+    else:
+        raise ImporterError("AI configuration required unless classification_mode=rules_only")
+    return category_id, classification
+
+
+def repayment_mapping(facts: dict, settings):
+    day = date.fromisoformat(facts["occurred_date"])
+    mappings = [
+        m
+        for m in settings.repayments
+        if m.currency == facts["original_currency"] and effective(m, day)
+    ]
+    if len(mappings) != 1:
+        raise ImporterError("repayment requires one effective account mapping")
+    return mappings[0]
 
 
 def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -> dict:
@@ -57,17 +121,16 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
     offset = int(utc_offset.total_seconds() // 60)
     amount = Decimal(facts["original_amount"])
     currency = facts["original_currency"]
-    snapshot = None
+    account_audit = None
     classification = None
     if event == "repayment":
         if not settings.repayment_ownership_confirmed:
             raise ImporterError("repayment cross-channel ownership requires configuration")
-        mappings = [m for m in settings.repayments if m.currency == currency and effective(m, day)]
-        if len(mappings) != 1 or currency != "CNY" or amount <= 0:
+        if currency != "CNY" or amount <= 0:
             raise ImporterError(
                 "repayment requires one effective CNY account pair and positive amount"
             )
-        mapping = mappings[0]
+        mapping = repayment_mapping(facts, settings)
         payload = {
             "type": 4,
             "sourceAccountId": mapping.source_account_id,
@@ -81,77 +144,23 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
             raise ImporterError("refund cross-channel ownership requires configuration")
         if (event == "expense" and amount <= 0) or (event == "refund" and amount >= 0):
             raise ImporterError("event sign contradicts bank evidence")
-        mappings = [
-            m
-            for m in settings.accounts
-            if m.card_reference == facts["card_reference"]
-            and m.currency == currency
-            and effective(m, day)
-        ]
-        if len(mappings) != 1:
-            raise ImporterError("expected one effective card/currency account mapping")
-        if currency == "CNY":
-            source_amount = cents(amount)
-        elif event == "expense":
-            source_amount, snapshot = convert_cny(
-                amount, currency, ledger.rates(), settings.exchange_rate_max_age_hours
-            )
-        else:
-            raise ImporterError(
-                "foreign refund conversion is not configured by the business contract"
-            )
-        categories = ledger.categories()
-        eligible = [c for c in categories if category_valid(c, 2)]
-        fallback = [c for c in eligible if c.get("path") == "其他杂项 → 待分类"]
-        if len(fallback) != 1:
-            raise ImporterError("fallback category path must resolve uniquely: 其他杂项 → 待分类")
-        fallback_id = str(fallback[0]["id"])
-        matched_rules = {
-            r.category_id
-            for r in settings.rules
-            if re.search(r.merchant_pattern, facts["merchant_raw"])
-        }
-        if len(matched_rules) > 1:
-            raise ImporterError("merchant rules conflict")
-        if matched_rules:
-            category_id = matched_rules.pop()
-            classification = {
-                "classification_status": "matched",
-                "reason": "merchant_rule",
-                "category_id": category_id,
-            }
-        elif ai and settings.classification_mode == "ai":
-            classification = ai.classify(
-                transaction["id"],
-                facts["merchant_raw"],
-                [c for c in eligible if str(c["id"]) != fallback_id],
-            )
-            category_id = (
-                str(classification["category_id"])
-                if classification["classification_status"] == "matched"
-                else fallback_id
-            )
-        elif settings.classification_mode == "rules_only":
-            category_id = fallback_id
-            classification = {
-                "classification_status": "unmatched",
-                "category_id": None,
-                "reason": "no matching rule; AI not configured",
-            }
-        else:
-            raise ImporterError("AI configuration required unless classification_mode=rules_only")
+        if currency not in {"CNY", "USD"}:
+            raise ImporterError("unsupported original currency")
+        account_id, account_audit = match_account(
+            ledger.accounts(), facts["card_reference"], currency
+        )
+        source_amount = cents(amount)
+        category_id, classification = classify_expense(transaction, settings, ledger, ai)
         payload = {
             "type": 3,
-            "sourceAccountId": mappings[0].account_id,
+            "sourceAccountId": account_id,
             "categoryId": category_id,
             "sourceAmount": source_amount,
         }
     else:
         raise ImporterError("unsupported event type")
     marker = transaction["marker"]
-    detail = f"{facts['merchant_raw']}" + (
-        f" 原币{currency} {amount} 人民币暂估" if snapshot else ""
-    )
+    detail = facts["merchant_raw"]
     if facts["time_precision"] != "second":
         detail += " 来源仅提供日期"
     payload.update(
@@ -162,15 +171,48 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
             "clientSessionId": marker,
         }
     )
-    validate_target(ledger, payload)
-    return {"payload": payload, "classification": classification, "rate_snapshot": snapshot}
+    validate_target(ledger, payload, currency)
+    return {
+        "payload": payload,
+        "classification": classification,
+        "rate_snapshot": None,
+        "target_currency": currency,
+        "account_match": account_audit,
+    }
+
+
+def refresh_classification(
+    transaction: dict, settings, ledger: Ledger, ai: Classifier | None
+) -> dict:
+    saved = transaction["decision"]
+    payload = dict(saved["payload"])
+    if payload["type"] == 3:
+        category_id, classification = classify_expense(transaction, settings, ledger, ai)
+        payload["categoryId"] = category_id
+    else:
+        payload["categoryId"] = repayment_mapping(transaction["facts"], settings).category_id
+        classification = saved.get("classification")
+    validate_target(ledger, payload, decision_currency(transaction))
+    # A retry refreshes only category choice. The previously persisted amount, quote,
+    # time, source marker and any manually corrected account remain authoritative.
+    return {
+        **saved,
+        "payload": payload,
+        "classification": classification,
+        "reclassify_requested": False,
+    }
 
 
 def classify_pending(store: Store, settings, ledger: Ledger, ai: Classifier | None):
     for transaction in store.all("SELECT * FROM transactions WHERE state='pending' ORDER BY id"):
         try:
             saved = transaction.get("decision") or {}
-            decision = saved if saved.get("payload") else decide(transaction, settings, ledger, ai)
+            if saved.get("payload") and saved.get("reclassify_requested"):
+                decision = refresh_classification(transaction, settings, ledger, ai)
+            else:
+                decision = (
+                    saved if saved.get("payload") else decide(transaction, settings, ledger, ai)
+                )
             payload = decision["payload"]
             candidates = ledger.search(payload["time"] - 86400, payload["time"] + 86400)
             exact_sources = [
@@ -279,10 +321,15 @@ def classify_pending(store: Store, settings, ledger: Ledger, ai: Classifier | No
                     (transaction["id"], transaction["version"]),
                 )
                 store.issue(
-                    "classification_failed",
+                    exc.code if isinstance(exc, AccountMatchError) else "classification_failed",
                     transaction["id"],
                     {
                         "version": transaction["version"],
+                        **(
+                            {"candidate_ids": exc.candidate_ids}
+                            if isinstance(exc, AccountMatchError)
+                            else {}
+                        ),
                         "error_type": type(exc).__name__,
                         "reason": str(exc)
                         if isinstance(exc, ImporterError)

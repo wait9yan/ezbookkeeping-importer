@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ezbookkeeping_importer.domain.money import cents, convert_cny
+from ezbookkeeping_importer.domain.money import cents
 from ezbookkeeping_importer.domain.errors import ImporterError
 from ezbookkeeping_importer.adapters.evidence_store import EvidenceStore
 from ezbookkeeping_importer.adapters.logging import configure_logging
@@ -14,25 +14,13 @@ from ezbookkeeping_importer.entrypoints.worker import next_check
 from ezbookkeeping_importer.application.collect import source_status
 
 
-def test_cross_rate_and_rounding():
-    snapshot = {
-        "dataSource": "synthetic",
-        "updateTime": 1000,
-        "baseCurrency": "EUR",
-        "exchangeRates": [{"currency": "USD", "rate": "2"}, {"currency": "CNY", "rate": "7.01"}],
-    }
-    value, saved = convert_cny(
-        Decimal("1"), "USD", snapshot, 1, datetime.fromtimestamp(1001, timezone.utc)
-    )
-    assert value == 351
-    assert saved["adoptedRate"] == "3.505"
-    assert snapshot.get("adoptedRate") is None
-    with pytest.raises(ImporterError):
-        convert_cny(Decimal("1"), "JPY", snapshot, 1)
+def test_exact_cent_amounts():
+    assert cents(Decimal("10.01")) == 1001
+    assert cents(Decimal("-10.01")) == -1001
     with pytest.raises(ImporterError):
         cents(Decimal("1.001"))
     with pytest.raises(ImporterError):
-        convert_cny(Decimal("1"), "USD", snapshot, None)
+        cents(Decimal("NaN"))
 
 
 def test_evidence_immutable_atomic(tmp_path):
@@ -81,7 +69,7 @@ def test_logs_persist_and_rotate(tmp_path, capsys):
 
 def test_rules_only_never_calls_configured_ai():
     from ezbookkeeping_importer.application.classify import decide
-    from ezbookkeeping_importer.config import AccountMapping, MailSettings, Settings
+    from ezbookkeeping_importer.config import MailSettings, Settings
 
     settings = Settings(
         ledger_url="http://synthetic.invalid",
@@ -90,18 +78,16 @@ def test_rules_only_never_calls_configured_ai():
         classification_mode="rules_only",
         ai_url="http://synthetic-ai.invalid/v1",
         ai_model="synthetic-model",
-        accounts=(
-            AccountMapping(
-                card_reference="1234",
-                currency="CNY",
-                account_id="account",
-                valid_from=date(2020, 1, 1),
-            ),
-        ),
     )
     ledger = Mock()
     ledger.accounts.return_value = [
-        {"id": "account", "type": 1, "currency": "CNY", "hidden": False}
+        {
+            "id": "account",
+            "type": 1,
+            "currency": "CNY",
+            "hidden": False,
+            "comment": "4444333322221234",
+        }
     ]
     ledger.categories.return_value = [
         {"id": "fallback", "type": 2, "parentId": "parent", "path": "其他杂项 → 待分类"}

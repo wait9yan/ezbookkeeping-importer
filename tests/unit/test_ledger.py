@@ -129,14 +129,7 @@ def test_settlement_roundtrip_preserves_all_non_amount_fields():
     assert client(handle).modify(payload)["sourceAmount"] == 1250
 
 
-def test_tree_and_rates_actual_wire_shapes():
-    snapshot = {
-        "dataSource": "fixture",
-        "updateTime": 123,
-        "baseCurrency": "EUR",
-        "exchangeRates": [{"currency": "CNY", "rate": "7.8123456789"}],
-    }
-
+def test_tree_actual_wire_shapes():
     def handle(request):
         if request.url.path.endswith("categories/list.json"):
             return ok(
@@ -163,13 +156,12 @@ def test_tree_and_rates_actual_wire_shapes():
             )
         if request.url.path.endswith("accounts/list.json"):
             return ok([{"id": "1", "subAccounts": [{"id": "2"}]}])
-        return ok(snapshot)
+        raise AssertionError("unexpected endpoint")
 
     ledger = client(handle)
     assert ledger.categories()[1]["path"] == "其他杂项 → 待分类"
     assert ledger.categories()[1]["hidden"] is True
     assert [account["id"] for account in ledger.accounts()] == ["1", "2"]
-    assert ledger.rates() == snapshot
 
 
 def test_create_preserves_payload_and_returns_complete_remote_record():

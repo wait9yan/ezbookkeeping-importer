@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from email.message import EmailMessage
 import os
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ from ezbookkeeping_importer.application.parse import parse_pending
 from ezbookkeeping_importer.application.reconcile import reconcile
 from ezbookkeeping_importer.application.resolve import resolve
 from ezbookkeeping_importer.application.write import complete, recover_dispatching, write_queued
-from ezbookkeeping_importer.config import AccountMapping, MailSettings, Settings
+from ezbookkeeping_importer.config import MailSettings, Settings
 from ezbookkeeping_importer.domain.errors import Conflict, ImporterError
 
 
@@ -60,16 +61,6 @@ def settings():
         mail=MailSettings(username="synthetic@example.test", source_id="synthetic"),
         timezone="Asia/Shanghai",
         classification_mode="rules_only",
-        exchange_rate_max_age_hours=24,
-        accounts=tuple(
-            AccountMapping(
-                card_reference="1234",
-                currency=currency,
-                account_id="account",
-                valid_from=date(2020, 1, 1),
-            )
-            for currency in ("CNY", "USD")
-        ),
     )
 
 
@@ -82,7 +73,22 @@ class Ledger:
         self.before_create = None
 
     def accounts(self):
-        return [{"id": "account", "type": 1, "currency": "CNY", "hidden": False}]
+        return [
+            {
+                "id": "account",
+                "type": 1,
+                "currency": "CNY",
+                "hidden": False,
+                "comment": "卡号 4444333322221234",
+            },
+            {
+                "id": "usd-account",
+                "type": 1,
+                "currency": "USD",
+                "hidden": False,
+                "comment": "卡号 4444333322221234",
+            },
+        ]
 
     def categories(self):
         return [
@@ -166,6 +172,37 @@ def queue(store, tmp_path, settings, ledger, **kwargs):
     return store.one("SELECT * FROM transactions")
 
 
+def queue_legacy_estimate(store, tmp_path, settings, ledger):
+    """An already persisted pre-original-currency decision, not a new FX import."""
+    import_daily(store, tmp_path, settings, currency="USD")
+    transaction = store.one("SELECT * FROM transactions")
+    payload = {
+        "type": 3,
+        "sourceAccountId": "account",
+        "sourceAmount": 7000,
+        "categoryId": "category",
+        "time": int(datetime.fromisoformat(transaction["facts"]["occurred_at"]).timestamp()),
+        "utcOffset": 480,
+        "comment": transaction["marker"] + " synthetic legacy CNY estimate",
+        "clientSessionId": transaction["marker"],
+    }
+    decision = {
+        "payload": payload,
+        "classification": {"classification_status": "unmatched", "category_id": None},
+        "rate_snapshot": {"dataSource": "synthetic legacy quote", "adoptedRate": "7"},
+    }
+    with store.transaction():
+        store.execute(
+            "UPDATE transactions SET decision=%s,state='queued' WHERE id=%s",
+            (decision, transaction["id"]),
+        )
+        store.execute(
+            "INSERT INTO jobs(transaction_id,kind,version,operation_key,payload) VALUES (%s,'create',1,%s,%s)",
+            (transaction["id"], transaction["marker"], payload),
+        )
+    return store.one("SELECT * FROM transactions")
+
+
 def test_ingest_replay_preserves_identical_real_multiplicity(database, tmp_path, settings):
     store = database.store
     first = import_daily(store, tmp_path, settings, count=2)
@@ -241,7 +278,7 @@ def test_unknown_without_unique_candidate_never_retries(
 
 def test_settlement_updates_same_id_and_preserves_current_fields(database, tmp_path, settings):
     store, ledger = database.store, Ledger()
-    transaction = queue(store, tmp_path, settings, ledger, currency="USD")
+    transaction = queue_legacy_estimate(store, tmp_path, settings, ledger)
     write_queued(store, ledger, True)
     target = store.one("SELECT target_id FROM transactions")["target_id"]
     edited = {
@@ -265,7 +302,7 @@ def test_settlement_updates_same_id_and_preserves_current_fields(database, tmp_p
     for field in ("categoryId", "comment", "tagIds", "hideAmount", "geoLocation", "time"):
         assert payload[field] == edited[field]
     assert payload["pictureIds"] == ["picture"]
-    assert store.one("SELECT status FROM reconciliation_items")["status"] == "matched"
+    assert store.one("SELECT status FROM reconciliation_items")["status"] == "target_changed"
     assert store.one("SELECT target_id FROM transactions")["target_id"] == target
 
 
@@ -320,7 +357,7 @@ def statement(store, transaction, amount):
 
 def test_settlement_preflight_retry_reuses_modify_intent(database, tmp_path, settings):
     store, ledger = database.store, Ledger()
-    transaction = queue(store, tmp_path, settings, ledger, currency="USD")
+    transaction = queue_legacy_estimate(store, tmp_path, settings, ledger)
     write_queued(store, ledger, True)
     target = store.one("SELECT target_id FROM transactions")["target_id"]
     statement(store, transaction, "72.00")
@@ -362,7 +399,7 @@ def test_equal_estimate_is_finalized_then_user_amount_edit_is_reported(
     database, tmp_path, settings
 ):
     store, ledger = database.store, Ledger()
-    transaction = queue(store, tmp_path, settings, ledger, currency="USD")
+    transaction = queue_legacy_estimate(store, tmp_path, settings, ledger)
     write_queued(store, ledger, True)
     target = store.one("SELECT target_id FROM transactions")["target_id"]
     statement(store, transaction, "70.00")
@@ -395,6 +432,9 @@ class Mail:
         self.scans.append((folder, after_uid, since))
         validity, messages = self.data[folder]
         return validity, [uid for uid in messages if uid > after_uid or since is not None]
+
+    def fetch_headers(self, folder, uid):
+        return self.data[folder][1][uid].split(b"\n\n", 1)[0] + b"\n\n"
 
     def fetch(self, folder, uid):
         self.fetches.append((folder, uid))
@@ -534,7 +574,7 @@ def test_restored_pending_exact_marker_blocks_create_even_when_amount_changed(
     database, tmp_path, settings
 ):
     store, ledger = database.store, Ledger()
-    transaction = queue(store, tmp_path, settings, ledger, currency="USD")
+    transaction = queue_legacy_estimate(store, tmp_path, settings, ledger)
     payload = store.one("SELECT payload FROM jobs")["payload"]
     ledger.records["existing"] = {"id": "existing", **payload, "sourceAmount": 7200}
     # Restore a snapshot predating the outbox and settled linkage.
@@ -554,7 +594,7 @@ def test_restore_audit_never_reposts_queued_settlement(database, tmp_path, setti
     from ezbookkeeping_importer.application.maintenance import restore_audit
 
     store, ledger = database.store, Ledger()
-    transaction = queue(store, tmp_path, settings, ledger, currency="USD")
+    transaction = queue_legacy_estimate(store, tmp_path, settings, ledger)
     write_queued(store, ledger, True)
     statement(store, transaction, "72.00")
     reconcile(store, ledger, tmp_path / "reports")
@@ -717,3 +757,183 @@ def test_forwarded_mail_reaches_explicit_acceptance_not_silent_ignore(database, 
     resolve(store, Ledger(), issue["id"], 1, "accept-source", "synthetic explicit verification")
     parse_pending(store, BankParser())
     assert store.one("SELECT count(*) AS n FROM transactions")["n"] == 1
+
+
+def test_explicit_retry_refreshes_deleted_category_without_repricing(
+    database, tmp_path, settings, monkeypatch
+):
+    from ezbookkeeping_importer.config import Rule
+
+    store, ledger = database.store, Ledger()
+    transaction = queue_legacy_estimate(store, tmp_path, settings, ledger)
+    original = deepcopy(store.one("SELECT decision FROM transactions")["decision"])
+    monkeypatch.setattr(
+        ledger,
+        "categories",
+        lambda: [
+            {"id": "replacement", "type": 2, "parentId": "parent", "path": "其他杂项 → 待分类"}
+        ],
+    )
+    monkeypatch.setattr(
+        ledger, "rates", lambda: pytest.fail("frozen quote must not be fetched again")
+    )
+    write_queued(store, ledger, True)
+    issue = store.one("SELECT * FROM issues WHERE code='write_preflight_failed'")
+    assert issue["data"]["version"] == 1
+    new_settings = settings.model_copy(
+        update={"rules": (Rule(merchant_pattern="合成", category_id="replacement"),)}
+    )
+    resolve(store, ledger, issue["id"], 1, "retry", "synthetic rule correction")
+    assert (
+        store.one("SELECT decision FROM transactions")["decision"]["reclassify_requested"] is True
+    )
+    classify_pending(store, new_settings, ledger, None)
+    decision = store.one("SELECT decision FROM transactions")["decision"]
+    assert decision["payload"] == {**original["payload"], "categoryId": "replacement"}
+    assert decision["rate_snapshot"] == original["rate_snapshot"]
+    assert decision["reclassify_requested"] is False
+    write_queued(store, ledger, True)
+    assert len(ledger.create_calls) == 1 and ledger.create_calls[0]["categoryId"] == "replacement"
+    assert store.one("SELECT marker FROM transactions")["marker"] == transaction["marker"]
+
+
+def test_reclassification_keeps_explicit_account_correction(
+    database, tmp_path, settings, monkeypatch
+):
+    store, ledger = database.store, Ledger()
+    transaction = queue_legacy_estimate(store, tmp_path, settings, ledger)
+    monkeypatch.setattr(
+        ledger,
+        "accounts",
+        lambda: [
+            {"id": account, "type": 1, "currency": "CNY"} for account in ("account", "corrected")
+        ],
+    )
+    store.issue("synthetic_mapping", transaction["id"], {"version": 1})
+    issue = store.one("SELECT * FROM issues WHERE code='synthetic_mapping'")
+    resolve(
+        store,
+        ledger,
+        issue["id"],
+        1,
+        "retry",
+        "synthetic account correction",
+        account_id="corrected",
+    )
+    classify_pending(store, settings, ledger, None)
+    assert store.one("SELECT payload FROM jobs")["payload"]["sourceAccountId"] == "corrected"
+    assert store.one("SELECT payload FROM jobs")["payload"]["sourceAmount"] == 7000
+
+
+def test_ai_reclassification_only_follows_explicit_retry(database, tmp_path, settings):
+    from unittest.mock import Mock
+
+    store, ledger = database.store, Ledger()
+    import_daily(store, tmp_path, settings)
+    ai_settings = settings.model_copy(update={"classification_mode": "ai"})
+    ai = Mock()
+    ai.classify.return_value = {
+        "classification_status": "matched",
+        "category_id": "edited-category",
+        "reason": "synthetic",
+    }
+    classify_pending(store, ai_settings, ledger, ai)
+    classify_pending(store, ai_settings, ledger, ai)
+    recover_dispatching(store)
+    classify_pending(store, ai_settings, ledger, ai)
+    assert ai.classify.call_count == 1
+    transaction = store.one("SELECT * FROM transactions")
+    store.issue("synthetic_retry", transaction["id"], {"version": 1})
+    issue = store.one("SELECT * FROM issues WHERE code='synthetic_retry'")
+    resolve(store, ledger, issue["id"], 1, "retry", "synthetic retry")
+    classify_pending(store, ai_settings, ledger, ai)
+    classify_pending(store, ai_settings, ledger, ai)
+    assert ai.classify.call_count == 2
+
+
+@pytest.mark.parametrize("state", ["dispatching", "unknown"])
+def test_retry_during_uncertain_write_does_not_reclassify(database, tmp_path, settings, state):
+    from unittest.mock import Mock
+
+    store, ledger = database.store, Ledger()
+    transaction = queue(store, tmp_path, settings, ledger)
+    store.execute("UPDATE transactions SET state=%s", (state,))
+    store.execute("UPDATE jobs SET status=%s", (state,))
+    store.issue("synthetic_retry", transaction["id"], {"version": 1})
+    issue = store.one("SELECT * FROM issues WHERE code='synthetic_retry'")
+    resolve(store, ledger, issue["id"], 1, "retry", "synthetic uncertain write")
+    ai = Mock()
+    classify_pending(store, settings, ledger, ai)
+    ai.classify.assert_not_called()
+    assert store.one("SELECT state,version FROM transactions") == {"state": state, "version": 1}
+    assert not store.one("SELECT decision FROM transactions")["decision"].get(
+        "reclassify_requested"
+    )
+
+
+@pytest.mark.parametrize("settled,actual", [(True, "70.00"), (False, "70.00"), (False, "72.00")])
+def test_foreign_date_change_reported_while_authorized_amount_settlement_continues(
+    database, tmp_path, settings, settled, actual
+):
+    store, ledger = database.store, Ledger()
+    transaction = queue_legacy_estimate(store, tmp_path, settings, ledger)
+    write_queued(store, ledger, True)
+    target = store.one("SELECT target_id FROM transactions")["target_id"]
+    statement(store, transaction, actual)
+    if settled:
+        reconcile(store, ledger, tmp_path / "reports")
+        write_queued(store, ledger, True)
+    changed_time = ledger.records[target]["time"] + 86400
+    ledger.records[target]["time"] = changed_time
+    reconcile(store, ledger, tmp_path / "reports")
+    assert store.one("SELECT status FROM reconciliation_items")["status"] == "target_changed"
+    write_queued(store, ledger, True)
+    reconcile(store, ledger, tmp_path / "reports")
+    assert ledger.records[target]["sourceAmount"] == int(Decimal(actual) * 100)
+    assert ledger.records[target]["time"] == changed_time
+    assert store.one("SELECT status FROM reconciliation_items")["status"] == "target_changed"
+    assert store.one("SELECT settlement FROM transactions")["settlement"] is not None
+
+
+def test_success_closes_transient_preflight_issue_without_manual_resolution(
+    database, tmp_path, settings, monkeypatch
+):
+    store, ledger = database.store, Ledger()
+    queue(store, tmp_path, settings, ledger)
+    accounts = ledger.accounts
+    monkeypatch.setattr(ledger, "accounts", lambda: [])
+    write_queued(store, ledger, True)
+    issue = store.one("SELECT * FROM issues WHERE code='write_preflight_failed'")
+    assert not issue["resolved"] and issue["data"]["version"] == 1
+    monkeypatch.setattr(ledger, "accounts", accounts)
+    write_queued(store, ledger, True)
+    assert store.one("SELECT resolved FROM issues WHERE code='write_preflight_failed'")["resolved"]
+
+
+@pytest.mark.parametrize(
+    "issue_job_offset,issue_version,job_version,resolved",
+    [
+        (0, 1, 1, True),
+        (1, 1, 1, False),
+        (0, 2, 1, False),
+        (0, None, 1, True),
+        (0, None, 2, False),
+    ],
+)
+def test_completion_closes_only_provably_same_preflight_operation(
+    database, tmp_path, settings, issue_job_offset, issue_version, job_version, resolved
+):
+    store, ledger = database.store, Ledger()
+    transaction = queue(store, tmp_path, settings, ledger)
+    store.execute("UPDATE transactions SET version=%s", (job_version,))
+    store.execute("UPDATE jobs SET version=%s", (job_version,))
+    job = store.one("SELECT * FROM jobs")
+    data = {"job_id": job["id"] + issue_job_offset}
+    if issue_version is not None:
+        data["version"] = issue_version
+    store.issue("write_preflight_failed", transaction["id"], data)
+    complete(store, job, {"id": "synthetic-target", **job["payload"]})
+    assert (
+        store.one("SELECT resolved FROM issues WHERE code='write_preflight_failed'")["resolved"]
+        is resolved
+    )

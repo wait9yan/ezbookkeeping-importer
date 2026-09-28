@@ -101,6 +101,12 @@ class MailClient:
         return validity, sorted(set(uids))
 
     def fetch(self, folder, uid) -> bytes:
+        return self._fetch(folder, uid, "BODY.PEEK[]")
+
+    def fetch_headers(self, folder, uid) -> bytes:
+        return self._fetch(folder, uid, "BODY.PEEK[HEADER]")
+
+    def _fetch(self, folder, uid, section: str) -> bytes:
         if not isinstance(uid, int) or uid <= 0:
             raise ValueError("UID must be a positive integer")
         if folder not in self._validities:
@@ -108,7 +114,7 @@ class MailClient:
         self._select(folder)
         if self._validity() != self._validities[folder]:
             raise ValueError("IMAP UIDVALIDITY changed; rescan the folder")
-        data = self._ok(self.connection.uid("FETCH", str(uid), "(UID BODY.PEEK[])"), "UID FETCH")
+        data = self._ok(self.connection.uid("FETCH", str(uid), f"(UID {section})"), "UID FETCH")
         payloads = [entry for entry in data if isinstance(entry, tuple)]
         if len(payloads) != 1:
             raise ValueError("IMAP FETCH did not return exactly one message")

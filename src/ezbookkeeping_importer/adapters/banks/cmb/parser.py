@@ -179,7 +179,10 @@ class BankParser:
                     raise ValueError("日报行字段数量错误")
                 clock, amount_text, detail_text = fields
                 amount_match = re.fullmatch(r"([A-Z]{3})\s+(.+)", amount_text)
-                detail = re.fullmatch(r"尾号(\d{4})\s+(\S+)\s+(.+)", detail_text)
+                detail = re.fullmatch(
+                    r"(?:尾号(?=[0-9]{4}\s)|卡号(?=[0-9]{12,19}\s))([0-9]+)\s+(\S+)\s+(.+)",
+                    detail_text,
+                )
                 if not amount_match or not detail or not re.fullmatch(r"\d{2}:\d{2}:\d{2}", clock):
                     raise ValueError("日报行字段结构错误")
                 event = {"消费": "expense", "邮购": "expense", "退货": "refund"}.get(

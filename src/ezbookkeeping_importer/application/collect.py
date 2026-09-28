@@ -4,6 +4,7 @@ import re
 import uuid
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+from typing import Any
 from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr
@@ -37,33 +38,179 @@ def request_sync(store: Store, since: date | None = None, until: date | None = N
         return result is not None
 
 
+def _without_header_comments(value: str) -> str:
+    cleaned = []
+    depth = 0
+    quoted = False
+    escaped = False
+    for char in value:
+        if escaped:
+            if not depth:
+                cleaned.append(char)
+            escaped = False
+            continue
+        if char == "\\" and (depth or quoted):
+            if not depth:
+                cleaned.append(char)
+            escaped = True
+            continue
+        if depth:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            continue
+        if char == '"':
+            quoted = not quoted
+        elif not quoted and char == "(":
+            depth = 1
+            cleaned.append(" ")
+            continue
+        elif not quoted and char == ")":
+            raise ValueError("unbalanced header comment")
+        cleaned.append(char)
+    if depth or quoted or escaped:
+        raise ValueError("incomplete header structure")
+    return "".join(cleaned)
+
+
+def _header_sections(value: str) -> list[str]:
+    sections = []
+    start = 0
+    quoted = False
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+        elif char == ";" and not quoted:
+            sections.append(value[start:index].strip())
+            start = index + 1
+    if quoted or escaped:
+        raise ValueError("incomplete quoted header value")
+    sections.append(value[start:].strip())
+    return sections
+
+
+def _qq_delivery_host(received: str) -> bool:
+    sections = _header_sections(_without_header_comments(received))
+    if len(sections) != 2 or not sections[1]:
+        return False
+    # Ignore quoted strings as well as comments: a phrase containing "by qq.com"
+    # is not the Received field's actual receiving-host clause.
+    transport = re.sub(r'"(?:\\.|[^"\\])*"', " ", sections[0])
+    hosts = re.findall(r"(?:^|\s)by\s+([^\s]+)", transport, re.IGNORECASE)
+    if len(hosts) != 1:
+        return False
+    host = hosts[0].lower().removesuffix(".")
+    return bool(re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*qq\.com", host))
+
+
+def _repair_qq_identity_folding(value: str) -> str:
+    # QQ folds even inside domain/mailbox tokens. Recover only actual CRLF+WSP
+    # inside these observed identity properties, never ordinary spaces or grammar.
+    token = r"[a-z0-9@<>._+%-]+"
+    pattern = re.compile(
+        rf"(?P<prefix>\b(?:header\.from|header\.d|smtp\.mailfrom)\s*=\s*)"
+        rf"(?P<value>{token}(?:\r\n[ \t]+{token})+)(?=\s|;|$)",
+        re.IGNORECASE,
+    )
+    pieces = re.split(r'("(?:\\.|[^"\\])*")', value)
+    return "".join(
+        piece
+        if index % 2
+        else pattern.sub(
+            lambda match: match.group("prefix") + re.sub(r"\r\n[ \t]+", "", match.group("value")),
+            piece,
+        )
+        for index, piece in enumerate(pieces)
+    )
+
+
+def _qq_authentication_results(value: str) -> bool:
+    sections = _header_sections(_repair_qq_identity_folding(_without_header_comments(value)))
+    if not sections or not re.fullmatch(r"mx\.qq\.com(?:\s+1)?", sections[0], re.IGNORECASE):
+        return False
+    results = {}
+    for section in sections[1:]:
+        result = re.match(r"(spf|dkim|dmarc)(?:/1)?\s*=\s*([a-z]+)(?=\s|$)", section, re.IGNORECASE)
+        if not result:
+            return False
+        method, verdict = (part.lower() for part in result.groups())
+        if method in results or verdict != "pass":
+            return False
+        attributes = {}
+        remaining = section[result.end() :].strip()
+        while remaining:
+            attribute = re.match(
+                r'([a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)?)\s*=\s*("(?:\\.|[^"\\])*"|[^\s;()"=]+)(?=\s|$)',
+                remaining,
+                re.IGNORECASE,
+            )
+            if not attribute:
+                return False
+            key, text = attribute.groups()
+            key = key.lower()
+            if key in attributes:
+                return False
+            if text.startswith('"'):
+                text = re.sub(r"\\(.)", r"\1", text[1:-1])
+            attributes[key] = text.lower()
+            remaining = remaining[attribute.end() :].strip()
+        results[method] = attributes
+    return set(results) == {"spf", "dkim", "dmarc"} and results["dmarc"].get("header.from") in {
+        "cmbchina.com",
+        "message.cmbchina.com",
+    }
+
+
 def source_status(raw: bytes, settings, origin: str) -> tuple[str, str]:
     if origin != "imap" or settings.source_policy == "manual_acceptance":
         return "requires_acceptance", "source requires explicit acceptance"
-    message = BytesParser(policy=policy.default).parsebytes(raw)
+    if (settings.trusted_authserv_id or "").lower() != "mx.qq.com":
+        return (
+            "requires_acceptance",
+            "QQ policy requires the configured mx.qq.com authentication service",
+        )
+    message = BytesParser(policy=policy.default).parsebytes(raw, headersonly=True)
+    if message.defects:
+        return "requires_acceptance", "malformed source headers"
+    if len(message.get_all("Subject", [])) > 1:
+        return "requires_acceptance", "duplicate subject headers"
     if normalize_subject(str(message.get("Subject", "")))[1]:
         return "requires_acceptance", "forwarded bank message requires explicit acceptance"
-    sender = parseaddr(str(message.get("From", "")))[1].lower()
+    senders = message.get_all("From", [])
     auth = message.get_all("Authentication-Results", [])
-    if sender != "ccsvc@message.cmbchina.com" or not auth:
-        return "requires_acceptance", "bank identity or trusted authentication missing"
-    # Only the first receiver assertion is considered; imported historical assertions do not qualify.
-    first = str(auth[0]).lower()
-    trusted = settings.trusted_authserv_id.lower()
     received = message.get_all("Received", [])
-    if not received or not re.search(
-        r"\bby\s+" + re.escape(trusted) + r"(?:\s|[;(])", str(received[0]).lower()
+    if len(senders) != 1 or len(auth) != 1 or not received:
+        return (
+            "requires_acceptance",
+            "source identity or authentication headers missing or duplicated",
+        )
+    addresses: tuple[Any, ...] = getattr(senders[0], "addresses", ())
+    if (
+        getattr(senders[0], "defects", ())
+        or len(addresses) != 1
+        or addresses[0].addr_spec.lower() != "ccsvc@message.cmbchina.com"
     ):
-        return "requires_acceptance", "top delivery hop is not configured QQ receiver"
-    if first.split(";", 1)[0].strip() != trusted:
-        return "requires_acceptance", "unexpected authentication receiver"
-    if not all(
-        re.search(rf"\b{method}\s*=\s*pass\b", first) for method in ("spf", "dkim", "dmarc")
-    ):
-        return "requires_acceptance", "bank authentication incomplete or conflicting"
-    if not re.search(r"header\.from\s*=\s*(?:message\.)?cmbchina\.com\b", first):
-        return "requires_acceptance", "authentication not aligned to bank domain"
-    return "verified", "configured QQ receiver authentication accepted"
+        return "requires_acceptance", "bank sender identity is not unambiguous"
+    try:
+        if not _qq_delivery_host(str(received[0])):
+            return "requires_acceptance", "top delivery hop is not a QQ receiving host"
+        raw_auth = next(
+            value for name, value in message.raw_items() if name.lower() == "authentication-results"
+        )
+        if not _qq_authentication_results(raw_auth):
+            return (
+                "requires_acceptance",
+                "QQ authentication results are incomplete, conflicting or unaligned",
+            )
+    except ValueError:
+        return "requires_acceptance", "malformed QQ authentication structure"
+    return "verified", "QQ receiving host and mx.qq.com bank authentication accepted"
 
 
 def ingest(store: Store, evidence, raw: bytes, settings, origin: str) -> str:
@@ -170,15 +317,21 @@ def collect(
             if bounded and task["uid"] not in selected_uids:
                 continue
             try:
-                raw = mail.fetch(folder, task["uid"])
-                envelope = BytesParser(policy=policy.default).parsebytes(raw, headersonly=True)
+                headers = mail.fetch_headers(folder, task["uid"])
+                envelope = BytesParser(policy=policy.default).parsebytes(headers, headersonly=True)
                 sender = parseaddr(str(envelope.get("From", "")))[1].lower()
                 if not bank_candidate(sender, str(envelope.get("Subject", ""))):
-                    store.execute(
-                        "UPDATE downloads SET status='ignored',error='non-bank message' WHERE id=%s",
-                        (task["id"],),
-                    )
+                    with store.transaction():
+                        store.execute(
+                            "UPDATE downloads SET status='ignored',error='non-bank message' WHERE id=%s",
+                            (task["id"],),
+                        )
+                        store.execute(
+                            "UPDATE issues SET resolved=true WHERE code='download_failed' AND entity_id=%s",
+                            (str(task["id"]),),
+                        )
                     continue
+                raw = mail.fetch(folder, task["uid"])
                 message_id = ingest(store, evidence, raw, settings, "imap")
                 store.execute(
                     "UPDATE downloads SET status='done',message_id=%s,error=NULL WHERE id=%s",
