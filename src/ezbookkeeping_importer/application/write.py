@@ -176,13 +176,25 @@ def record_preflight_failure(store: Store, candidate: dict, error: Exception):
         )
 
 
-def write_queued(store: Store, ledger: Ledger, enabled: bool):
+def write_queued(
+    store: Store,
+    ledger: Ledger,
+    enabled: bool,
+    *,
+    transaction_ids: frozenset[str] | None = None,
+):
     verify_unknown(store, ledger)
-    if not enabled:
+    if not enabled or transaction_ids == frozenset():
         return
-    for candidate in store.all(
-        "SELECT * FROM jobs WHERE status='queued' AND kind IN ('create','settle_amount') ORDER BY id"
-    ):
+    query = "SELECT * FROM jobs WHERE status='queued' AND kind IN ('create','settle_amount')"
+    params: tuple[str, ...] = ()
+    if transaction_ids is not None:
+        params = tuple(sorted(transaction_ids))
+        placeholders = ",".join("%s" for _ in params)
+        query += f" AND transaction_id IN ({placeholders})"
+    # Scope only selects candidates; all currency, preflight, version and UNKNOWN
+    # handling below remains the same as the ordinary worker's outbox execution.
+    for candidate in store.all(query + " ORDER BY id", params):
         try:
             transaction = store.one(
                 "SELECT * FROM transactions WHERE id=%s", (candidate["transaction_id"],)

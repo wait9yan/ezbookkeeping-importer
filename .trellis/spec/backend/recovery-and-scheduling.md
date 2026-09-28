@@ -43,3 +43,9 @@
 正确：显式重试只刷新分类；持久变化信号配合周期历史复核；连接失效退出重新获锁；先持久下载结果再推进检查点。
 
 反向核对 `report_key:daily:transaction_id` 从查询失败恢复为 `awaiting_statement` 或 `import_pending` 时，核对项更新与对应 `reconciliation` 异常解除须同事务；不能关闭其他报告或其他异常类型。目标仍缺失继续保留异常，后续故障可重新打开。
+
+## 限定验收批次
+
+`classify_pending(..., *, transaction_ids: frozenset[str] | None = None)` 与 `write_queued(..., *, transaction_ids: frozenset[str] | None = None)` 可指定持久交易 ID 范围。None 保留日常流水线行为；空集合不分类、不发送；非空集合通过参数化 IN 只选对应 pending/queued 记录。范围过滤之后仍执行原有版本、币种、预检、尝试落库和 UNKNOWN 协议，不能直接调用 HTTP 绕开状态机，也不能临时改其他任务状态来实现小批次。
+
+写入前的 `verify_unknown` 保持只读核实既有未决结果，可确认范围外历史结果，但不能产生范围外 POST。测试必须覆盖无匹配、空集合、失败／拒绝／UNKNOWN，以及范围内旧结算与范围外队列不动。该接口供明确范围的验收调用，未新增 CLI 或配置项。

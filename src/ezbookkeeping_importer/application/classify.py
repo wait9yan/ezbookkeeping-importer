@@ -203,8 +203,23 @@ def refresh_classification(
     }
 
 
-def classify_pending(store: Store, settings, ledger: Ledger, ai: Classifier | None):
-    for transaction in store.all("SELECT * FROM transactions WHERE state='pending' ORDER BY id"):
+def classify_pending(
+    store: Store,
+    settings,
+    ledger: Ledger,
+    ai: Classifier | None,
+    *,
+    transaction_ids: frozenset[str] | None = None,
+):
+    if transaction_ids == frozenset():
+        return
+    query = "SELECT * FROM transactions WHERE state='pending'"
+    params: tuple[str, ...] = ()
+    if transaction_ids is not None:
+        params = tuple(sorted(transaction_ids))
+        placeholders = ",".join("%s" for _ in params)
+        query += f" AND id IN ({placeholders})"
+    for transaction in store.all(query + " ORDER BY id", params):
         try:
             saved = transaction.get("decision") or {}
             if saved.get("payload") and saved.get("reclassify_requested"):
