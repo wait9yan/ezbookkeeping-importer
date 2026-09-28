@@ -6,7 +6,7 @@
 
 ## 2. 接口
 
-- `Mail.fetch_headers(folder, uid) -> bytes` 与 `fetch` 共用 UID、UIDVALIDITY 校验，使用 `BODY.PEEK[HEADER]` / `BODY.PEEK[]`。
+- `Mail.fetch_headers_batch(folder, uids: tuple[int, ...]) -> dict[int, bytes]` 每批最多 50 UID，一次 EXAMINE 验证 UIDVALIDITY 后执行 UID FETCH 集合。校验每条 UID 归属、重复与完整 literal；缺失 UID 显式失败，畸形响应整批失败。保留单封 `fetch_headers` 和正文 `fetch`，银行候选才取正文。
 - `PostgresStore.is_connection_usable() -> bool` 检查连接是否 closed / broken；失效时 worker 退出，由进程管理器重启并重新获取锁。
 - `reconcile_if_due(store, ledger, report_dir, now=None) -> bool` 返回本轮是否核对。
 - `jobs` 的 `kind=reconcile_checkpoint`、`operation_key=reconciliation-checkpoint` 保存唯一核对检查点，不作为可发送任务领取。
@@ -49,3 +49,5 @@
 `classify_pending(..., *, transaction_ids: frozenset[str] | None = None)` 与 `write_queued(..., *, transaction_ids: frozenset[str] | None = None)` 可指定持久交易 ID 范围。None 保留日常流水线行为；空集合不分类、不发送；非空集合通过参数化 IN 只选对应 pending/queued 记录。范围过滤之后仍执行原有版本、币种、预检、尝试落库和 UNKNOWN 协议，不能直接调用 HTTP 绕开状态机，也不能临时改其他任务状态来实现小批次。
 
 写入前的 `verify_unknown` 保持只读核实既有未决结果，可确认范围外历史结果，但不能产生范围外 POST。测试必须覆盖无匹配、空集合、失败／拒绝／UNKNOWN，以及范围内旧结算与范围外队列不动。该接口供明确范围的验收调用，未新增 CLI 或配置项。
+
+批量采集仅分页读取 pending/failed（每页50），不重读 done/ignored。每轮页游标即使失败也前进，防止一个失败批次饿死后续邮件；下一次采集从未完成位置重试。合法部分返回只标记缺失 UID 失败，不能把缺失当非银行忽略。真实首次扫描约五千条记录促成此优化，减少逐封 EXAMINE/FETCH 网络往返。

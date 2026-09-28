@@ -25,6 +25,15 @@ class HeaderMail(test_pipeline.Mail):
         self.headers = []
         self.header_failures = set()
 
+    def fetch_headers_batch(self, folder, uids):
+        result = {}
+        for uid in uids:
+            try:
+                result[uid] = self.fetch_headers(folder, uid)
+            except TimeoutError:
+                pass  # Simulate a valid partial server response with this UID omitted.
+        return result
+
     def fetch_headers(self, folder, uid):
         self.headers.append((folder, uid))
         validity = self.data[folder][0]

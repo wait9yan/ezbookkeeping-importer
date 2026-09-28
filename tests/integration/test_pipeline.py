@@ -433,6 +433,9 @@ class Mail:
         validity, messages = self.data[folder]
         return validity, [uid for uid in messages if uid > after_uid or since is not None]
 
+    def fetch_headers_batch(self, folder, uids):
+        return {uid: self.fetch_headers(folder, uid) for uid in uids}
+
     def fetch_headers(self, folder, uid):
         return self.data[folder][1][uid].split(b"\n\n", 1)[0] + b"\n\n"
 

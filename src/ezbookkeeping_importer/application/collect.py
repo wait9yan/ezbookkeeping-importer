@@ -11,7 +11,7 @@ from email.utils import parseaddr
 
 from ..domain.errors import ImporterError
 from ..domain.mail import bank_candidate, normalize_subject
-from .ports import Mail, Store
+from .ports import HEADER_BATCH_SIZE, Mail, Store
 
 
 def validate_scan_range(since: date | None, until: date | None):
@@ -227,6 +227,43 @@ def ingest(store: Store, evidence, raw: bytes, settings, origin: str) -> str:
     return digest
 
 
+def _download_failure(store: Store, task: dict, error_type: str, stage: str):
+    with store.transaction():
+        store.execute(
+            "UPDATE downloads SET status='failed',error=%s WHERE id=%s", (error_type, task["id"])
+        )
+        store.issue("download_failed", str(task["id"]), {"error_type": error_type, "stage": stage})
+
+
+def _process_header(
+    store: Store, mail: Mail, evidence, settings, folder: str, task: dict, headers: bytes
+):
+    envelope = BytesParser(policy=policy.default).parsebytes(headers, headersonly=True)
+    sender = parseaddr(str(envelope.get("From", "")))[1].lower()
+    if not bank_candidate(sender, str(envelope.get("Subject", ""))):
+        with store.transaction():
+            store.execute(
+                "UPDATE downloads SET status='ignored',error='non-bank message' WHERE id=%s",
+                (task["id"],),
+            )
+            store.execute(
+                "UPDATE issues SET resolved=true WHERE code='download_failed' AND entity_id=%s",
+                (str(task["id"]),),
+            )
+        return
+    raw = mail.fetch(folder, task["uid"])
+    message_id = ingest(store, evidence, raw, settings, "imap")
+    with store.transaction():
+        store.execute(
+            "UPDATE downloads SET status='done',message_id=%s,error=NULL WHERE id=%s",
+            (message_id, task["id"]),
+        )
+        store.execute(
+            "UPDATE issues SET resolved=true WHERE code='download_failed' AND entity_id=%s",
+            (str(task["id"]),),
+        )
+
+
 def collect(
     store: Store,
     mail: Mail,
@@ -307,47 +344,40 @@ def collect(
                     VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
                     (settings.mail.source_id, folder, validity, uid),
                 )
-        pending = store.all(
-            """SELECT * FROM downloads WHERE source_id=%s AND folder=%s
-            AND validity=%s AND status IN ('pending','failed') ORDER BY uid""",
-            (settings.mail.source_id, folder, validity),
-        )
         selected_uids = set(uids)
-        for task in pending:
-            if bounded and task["uid"] not in selected_uids:
+        after_uid = 0
+        while True:
+            pending = store.all(
+                """SELECT * FROM downloads WHERE source_id=%s AND folder=%s
+                AND validity=%s AND status IN ('pending','failed') AND uid>%s ORDER BY uid LIMIT %s""",
+                (settings.mail.source_id, folder, validity, after_uid, HEADER_BATCH_SIZE),
+            )
+            if not pending:
+                break
+            # Advance only this iteration's page position, including failed batches. Failed
+            # locations remain durable and will be retried from zero on the next collection.
+            after_uid = pending[-1]["uid"]
+            batch = [task for task in pending if not bounded or task["uid"] in selected_uids]
+            if not batch:
                 continue
             try:
-                headers = mail.fetch_headers(folder, task["uid"])
-                envelope = BytesParser(policy=policy.default).parsebytes(headers, headersonly=True)
-                sender = parseaddr(str(envelope.get("From", "")))[1].lower()
-                if not bank_candidate(sender, str(envelope.get("Subject", ""))):
-                    with store.transaction():
-                        store.execute(
-                            "UPDATE downloads SET status='ignored',error='non-bank message' WHERE id=%s",
-                            (task["id"],),
-                        )
-                        store.execute(
-                            "UPDATE issues SET resolved=true WHERE code='download_failed' AND entity_id=%s",
-                            (str(task["id"]),),
-                        )
-                    continue
-                raw = mail.fetch(folder, task["uid"])
-                message_id = ingest(store, evidence, raw, settings, "imap")
-                store.execute(
-                    "UPDATE downloads SET status='done',message_id=%s,error=NULL WHERE id=%s",
-                    (message_id, task["id"]),
-                )
-                store.execute(
-                    "UPDATE issues SET resolved=true WHERE code='download_failed' AND entity_id=%s",
-                    (str(task["id"]),),
+                headers_by_uid = mail.fetch_headers_batch(
+                    folder, tuple(task["uid"] for task in batch)
                 )
             except Exception as exc:
-                # Per-message isolation preserves both failure and the remaining mail backlog.
-                store.execute(
-                    "UPDATE downloads SET status='failed',error=%s WHERE id=%s",
-                    (type(exc).__name__, task["id"]),
-                )
-                store.issue("download_failed", str(task["id"]), {"error_type": type(exc).__name__})
+                for task in batch:
+                    _download_failure(store, task, type(exc).__name__, "headers_batch")
+                continue
+            for task in batch:
+                if task["uid"] not in headers_by_uid:
+                    _download_failure(store, task, "MissingHeader", "headers_batch")
+                    continue
+                try:
+                    _process_header(
+                        store, mail, evidence, settings, folder, task, headers_by_uid[task["uid"]]
+                    )
+                except Exception as exc:
+                    _download_failure(store, task, type(exc).__name__, "message")
         if not bounded:
             store.execute(
                 """UPDATE cursors SET historical_complete=NOT EXISTS(

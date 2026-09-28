@@ -5,6 +5,8 @@ import imaplib
 import re
 import ssl
 
+from ...application.ports import HEADER_BATCH_SIZE
+
 
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
@@ -106,14 +108,68 @@ class MailClient:
     def fetch_headers(self, folder, uid) -> bytes:
         return self._fetch(folder, uid, "BODY.PEEK[HEADER]")
 
-    def _fetch(self, folder, uid, section: str) -> bytes:
-        if not isinstance(uid, int) or uid <= 0:
-            raise ValueError("UID must be a positive integer")
+    def fetch_headers_batch(self, folder, uids: tuple[int, ...]) -> dict[int, bytes]:
+        if not uids:
+            return {}
+        if len(uids) > HEADER_BATCH_SIZE or any(type(uid) is not int or uid <= 0 for uid in uids):
+            raise ValueError("Header batch requires up to 50 positive integer UIDs")
+        if len(set(uids)) != len(uids):
+            raise ValueError("Header batch contains duplicate UIDs")
+        self._select_snapshot(folder)
+        uid_set = ",".join(str(uid) for uid in uids)
+        data = self._ok(
+            self.connection.uid("FETCH", uid_set, "(UID BODY.PEEK[HEADER])"), "UID FETCH headers"
+        )
+        if data == [None]:
+            return {}
+        result = {}
+        pending = None
+        for entry in data:
+            if isinstance(entry, tuple):
+                if (
+                    pending is not None
+                    or len(entry) != 2
+                    or not all(isinstance(item, bytes) for item in entry)
+                ):
+                    raise ValueError("Invalid IMAP header literal structure")
+                pending = entry
+                continue
+            if not isinstance(entry, bytes) or pending is None:
+                raise ValueError("Invalid IMAP header response structure")
+            attributes, headers = pending
+            metadata = attributes + entry
+            shape = re.fullmatch(
+                rb"[1-9][0-9]*\s+\((?:UID\s+([1-9][0-9]*)\s+)?BODY\[HEADER\]\s+\{([0-9]+)\}(?:\s+UID\s+([1-9][0-9]*))?\)",
+                metadata,
+                re.IGNORECASE,
+            )
+            if not shape:
+                raise ValueError("Unsupported IMAP header metadata")
+            before_uid, literal_size, after_uid = shape.groups()
+            if (before_uid is None) == (after_uid is None):
+                raise ValueError("IMAP header response must identify exactly one UID")
+            uid = int(before_uid or after_uid)
+            if uid not in uids or uid in result or len(headers) != int(literal_size):
+                raise ValueError("IMAP header UID or literal length mismatch")
+            result[uid] = headers
+            pending = None
+        if pending is not None:
+            raise ValueError("Incomplete IMAP header response")
+        # Missing requested UIDs are explicit omissions, not empty/non-bank messages.
+        # The collector persists their failure while processing validated returned entries.
+        return result
+
+    def _select_snapshot(self, folder):
         if folder not in self._validities:
             raise ValueError("Take a folder snapshot before fetching messages")
         self._select(folder)
         if self._validity() != self._validities[folder]:
             raise ValueError("IMAP UIDVALIDITY changed; rescan the folder")
+
+    def _fetch(self, folder, uid, section: str) -> bytes:
+        if not isinstance(uid, int) or uid <= 0:
+            raise ValueError("UID must be a positive integer")
+        self._select_snapshot(folder)
         data = self._ok(self.connection.uid("FETCH", str(uid), f"(UID {section})"), "UID FETCH")
         payloads = [entry for entry in data if isinstance(entry, tuple)]
         if len(payloads) != 1:

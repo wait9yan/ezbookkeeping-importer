@@ -1,6 +1,8 @@
 from typing import Any, Protocol
 from datetime import date
 
+HEADER_BATCH_SIZE = 50
+
 
 class Ledger(Protocol):
     def accounts(self) -> list[dict]: ...
@@ -19,6 +21,7 @@ class Mail(Protocol):
     ) -> tuple[str, list[int]]: ...
     def fetch(self, folder: str, uid: int) -> bytes: ...
     def fetch_headers(self, folder: str, uid: int) -> bytes: ...
+    def fetch_headers_batch(self, folder: str, uids: tuple[int, ...]) -> dict[int, bytes]: ...
 
 
 class Classifier(Protocol):
