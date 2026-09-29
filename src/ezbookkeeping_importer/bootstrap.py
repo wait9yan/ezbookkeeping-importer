@@ -1,6 +1,7 @@
 from contextlib import ExitStack
 
 from .adapters.llm.openai import AIClient
+from .adapters.network import SERVICE_TIMEOUT_SECONDS
 from .adapters.banks.cmb import BankParser
 from .adapters.evidence_store import EvidenceStore
 from .adapters.ezbookkeeping.client import EzBookkeepingClient
@@ -39,7 +40,7 @@ class Runtime:
                 self._ledger = EzBookkeepingClient(
                     settings.ledger_url,
                     settings.ledger_token.get_secret_value(),
-                    timeout=settings.ledger_timeout_seconds,
+                    timeout=SERVICE_TIMEOUT_SECONDS,
                 )
                 resources.callback(self._ledger.close)
             if "pipeline" in self.capabilities:
@@ -52,7 +53,7 @@ class Runtime:
                         settings.ai_url,
                         settings.ai_token.get_secret_value(),
                         settings.ai_model,
-                        timeout=settings.ai_timeout_seconds,
+                        timeout=SERVICE_TIMEOUT_SECONDS,
                     )
                     resources.callback(self.ai.close)
             if "evidence" in self.capabilities:

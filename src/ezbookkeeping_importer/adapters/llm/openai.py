@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ezbookkeeping_importer.domain.errors import ImporterError
 
+from ..network import SERVICE_TIMEOUT_SECONDS
+
 PROMPT_VERSION = "expense-purpose-v1"
 TOKEN_USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
 
@@ -32,7 +34,7 @@ class AIClient:
         base_url: str,
         api_key: str,
         model: str,
-        timeout: float = 30,
+        timeout: float = SERVICE_TIMEOUT_SECONDS,
         *,
         client: httpx.Client | None = None,
     ):

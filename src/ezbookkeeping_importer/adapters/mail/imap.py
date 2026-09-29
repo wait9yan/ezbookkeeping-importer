@@ -6,6 +6,7 @@ import re
 import ssl
 
 from ...application.ports import HEADER_BATCH_SIZE
+from ..network import SERVICE_TIMEOUT_SECONDS
 
 
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -21,7 +22,7 @@ class MailClient:
             config.host,
             config.port,
             ssl_context=ssl.create_default_context(),
-            timeout=config.timeout_seconds,
+            timeout=SERVICE_TIMEOUT_SECONDS,
         )
         self._ok(
             self.connection.login(config.username, config.password.get_secret_value()), "login"

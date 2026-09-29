@@ -26,7 +26,6 @@ def client():
             port=993,
             username="synthetic",
             password=SecretStr("synthetic"),
-            timeout_seconds=10,
         ),
         connection_factory=BatchIMAP,
     )

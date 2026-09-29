@@ -139,11 +139,8 @@ def test_ai_mode_requires_url_model_and_key(config, monkeypatch, command):
 def test_every_service_field_comes_from_environment(config, monkeypatch):
     environment(monkeypatch)
     overrides = {
-        "EBKI_LEDGER_TIMEOUT_SECONDS": "4.5",
-        "EBKI_AI_TIMEOUT_SECONDS": "5.5",
         "EBKI_IMAP_HOST": "imap.example.test",
         "EBKI_IMAP_PORT": "1993",
-        "EBKI_IMAP_TIMEOUT_SECONDS": "6.5",
     }
     environment(monkeypatch, overrides)
     settings = load_settings(str(config))
@@ -191,9 +188,6 @@ def test_all_legacy_runtime_toml_keys_are_reported_without_values(config, monkey
         ("EBKI_IMAP_PORT", "0"),
         ("EBKI_IMAP_PORT", "65536"),
         ("EBKI_IMAP_PORT", "secret-not-port"),
-        ("EBKI_LEDGER_TIMEOUT_SECONDS", "nan"),
-        ("EBKI_AI_TIMEOUT_SECONDS", "inf"),
-        ("EBKI_IMAP_TIMEOUT_SECONDS", "0"),
         ("EBKI_LEDGER_URL", "https://user:secret@example.test"),
         ("EBKI_AI_URL", "file:///secret"),
         ("EBKI_LEDGER_URL", "https://example.test:99999/secret"),
@@ -292,25 +286,28 @@ def test_runtime_constructs_only_command_dependencies(
         assert constructors.created["EzBookkeepingClient"].closed
 
 
-def test_timeouts_reach_clients_and_rules_only_does_not_construct_ai(
-    config, monkeypatch, constructors
+@pytest.mark.parametrize("legacy_timeout", ["1.5", "nan", "secret-not-timeout"])
+def test_fixed_timeouts_ignore_removed_environment_and_rules_only_does_not_construct_ai(
+    config, monkeypatch, constructors, legacy_timeout
 ):
     environment(monkeypatch)
     environment(
         monkeypatch,
         {
-            "EBKI_LEDGER_TIMEOUT_SECONDS": "1.5",
-            "EBKI_AI_TIMEOUT_SECONDS": "2.5",
-            "EBKI_IMAP_TIMEOUT_SECONDS": "3.5",
+            "EBKI_LEDGER_TIMEOUT_SECONDS": legacy_timeout,
+            "EBKI_AI_TIMEOUT_SECONDS": legacy_timeout,
+            "EBKI_IMAP_TIMEOUT_SECONDS": legacy_timeout,
         },
     )
     config.write_text(BUSINESS.replace('"rules_only"', '"ai"'))
     settings = load_settings(str(config))
     runtime = bootstrap.Runtime(settings)
-    assert constructors.arguments["EzBookkeepingClient"][1]["timeout"] == 1.5
-    assert constructors.arguments["AIClient"][1]["timeout"] == 2.5
+    assert constructors.arguments["EzBookkeepingClient"][1]["timeout"] == 30
+    assert constructors.arguments["AIClient"][1]["timeout"] == 30
     runtime.mail()
-    assert constructors.arguments["MailClient"][0][0].timeout_seconds == 3.5
+    assert not hasattr(constructors.arguments["MailClient"][0][0], "timeout_seconds")
+    assert not hasattr(settings, "ledger_timeout_seconds")
+    assert not hasattr(settings, "ai_timeout_seconds")
     runtime.close()
     assert all(
         constructors.created[name].closed
@@ -558,3 +555,20 @@ def test_recheck_accepts_no_batch_bypass_options():
         with pytest.raises(SystemExit) as error:
             cli.parse_command(parser, ["recheck", "--action", "confirm-new"])
         assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "field", ["ledger_timeout_seconds", "ai_timeout_seconds", "mail.timeout_seconds"]
+)
+def test_retired_timeouts_require_removal_not_environment_migration(config, monkeypatch, field):
+    environment(monkeypatch)
+    if field.startswith("mail."):
+        config.write_text(BUSINESS + 'timeout_seconds = "secret-timeout"\n')
+    else:
+        config.write_text(f'{field} = "secret-timeout"\n' + BUSINESS)
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(str(config))
+    message = str(error.value)
+    assert f"{field} -> remove" in message
+    assert "EBKI_" not in message
+    assert "secret-timeout" not in message

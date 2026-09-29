@@ -30,7 +30,6 @@ class MailSettings(StrictModel):
     port: int = Field(default=993, ge=1, le=65535)
     username: str = ""
     password: SecretStr = SecretStr("")
-    timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
     source_id: str
     rescan_days: int = Field(default=7, ge=0, strict=True)
 
@@ -59,7 +58,6 @@ class Rule(StrictModel):
 class Settings(StrictModel):
     database_url: SecretStr = SecretStr("")
     ledger_url: str = ""
-    ledger_timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
     ledger_token: SecretStr = SecretStr("")
     mail: MailSettings
     timezone: str
@@ -77,7 +75,6 @@ class Settings(StrictModel):
     ai_url: str | None = None
     ai_model: str | None = None
     ai_token: SecretStr = SecretStr("")
-    ai_timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
 
     @field_validator("log_level")
     @classmethod
@@ -139,16 +136,13 @@ ENV_FIELDS = {
     "database_url": "EBKI_DATABASE_URL",
     "ledger_url": "EBKI_LEDGER_URL",
     "ledger_token": "EBKI_LEDGER_TOKEN",
-    "ledger_timeout_seconds": "EBKI_LEDGER_TIMEOUT_SECONDS",
     "ai_url": "EBKI_AI_URL",
     "ai_model": "EBKI_AI_MODEL",
     "ai_token": "EBKI_AI_TOKEN",
-    "ai_timeout_seconds": "EBKI_AI_TIMEOUT_SECONDS",
     "mail.host": "EBKI_IMAP_HOST",
     "mail.port": "EBKI_IMAP_PORT",
     "mail.username": "EBKI_IMAP_USERNAME",
     "mail.password": "EBKI_IMAP_PASSWORD",
-    "mail.timeout_seconds": "EBKI_IMAP_TIMEOUT_SECONDS",
 }
 LOCAL_COMMANDS = {"migrate", "status", "issues", "sync", "recheck", "resolve"}
 
@@ -266,6 +260,11 @@ def load_settings(
     except OSError:
         raise ConfigurationError("business configuration file cannot be read") from None
     retired = []
+    for field in ("ledger_timeout_seconds", "ai_timeout_seconds", "mail.timeout_seconds"):
+        parts = field.split(".")
+        owner = data if len(parts) == 1 else data.get(parts[0], {})
+        if isinstance(owner, dict) and parts[-1] in owner:
+            retired.append(f"{field} -> remove; service timeouts are fixed at 30 seconds")
     for field in ("evidence_dir", "report_dir", "log_dir", "log_max_bytes", "log_backups"):
         if field in data:
             retired.append(f"{field} -> remove; runtime directories and log rotation are fixed")

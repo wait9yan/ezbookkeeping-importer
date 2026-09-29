@@ -5,7 +5,7 @@
 ## 来源契约
 
 - `config.toml`：业务策略、还款历史映射、商户规则、分类模式、时区、日志级别；`mail.source_id` 为稳定业务身份。
-- 进程环境：数据库；账本地址/Token/超时；AI 地址/模型/Key/超时；IMAP 主机/端口/用户名/授权码/超时。
+- 进程环境：数据库；账本地址/Token；AI 地址/模型/Key；IMAP 主机/端口/用户名/授权码。
 - `.env.example` 列出环境变量和默认值；本地`./run`定位项目根目录并委托uv显式加载根.env，零参数选择`ebki run`、有参数透传CLI。原始`uv run --env-file .env ebki ...`继续可用，config.toml已有默认值。已有进程环境优先，应用不引入第二个dotenv加载器。
 - Compose 显式映射同一组变量，但不能用 `${TOKEN:?}` 预先要求所有凭据，否则数据库维护命令无法执行。Docker 网络是部署层必需条件，独立于应用的命令依赖。
 - 移入环境变量的旧 TOML 键必须报出字段名与对应环境变量，不能静默覆盖、丢弃或按环境缺失回退到 TOML。
@@ -25,7 +25,7 @@
 
 ## 验证与错误
 
-必需项缺失和非法输入在资源创建前失败。错误只能报告字段名、变量名和安全原因，不输出输入值、DSN、Token 或含凭据 URL。rules_only 不要求 AI；仍要拒绝已经提供但语法非法的环境值。URL、端口、有限正超时及日志级别通过统一配置边界校验，超时必须传入真正的客户端。
+必需项缺失和非法输入在资源创建前失败。错误只能报告字段名、变量名和安全原因，不输出输入值、DSN、Token 或含凭据 URL。rules_only 不要求 AI；仍要拒绝已经提供但语法非法的环境值。URL、端口及日志级别通过统一配置边界校验。账本、AI与IMAP客户端超时固定30秒并传入实际客户端，不提供环境变量或TOML覆盖；数据库连接超时仍按原契约。
 
 正确：迁移只提供 `EBKI_DATABASE_URL`，业务 TOML 合法即可；worker 缺模型配置时在启动阶段一次列出缺项。
 
@@ -37,7 +37,7 @@
 
 ## 必需回归
 
-环境变量实际生效；业务规则保留；旧键明确迁移；必需项和非法值不泄露；按命令依赖矩阵；rules_only 无 AI；超时透传；资源构造失败清理；实际 uv 加载合成 `.env`；Compose 空凭据配置渲染；固定路径挂载一致；日志级别仅从 TOML 读取；旧目录和轮转 TOML 字段拒绝。
+环境变量实际生效；业务规则保留；旧键明确迁移；必需项和非法值不泄露；按命令依赖矩阵；rules_only 无 AI；固定30秒超时实际传递且旧环境变量不能覆盖；资源构造失败清理；实际 uv 加载合成 `.env`；Compose 空凭据配置渲染；固定路径挂载一致；日志级别仅从 TOML 读取；旧目录和轮转 TOML 字段拒绝。
 
 普通消费不再接受 `accounts` 配置，改从 ezBookkeeping 账户描述解析卡号，再按邮件原币唯一匹配。新流程不用汇率，不保留汇率时效配置或专用迁移检查。旧账户映射必须明确提示迁移，不能与远端描述共同构成两个映射来源；契约见 [卡号匹配与原币入账](account-matching.md)。
 
@@ -54,3 +54,13 @@ source_policy 与 trusted_authserv_id 已删除，旧键明确迁移报错。来
 TOML 顶层 `log_level` 对应 Settings.log_level，默认INFO，接受DEBUG/INFO/WARNING/ERROR/CRITICAL，非法值明确配置错误。交互控制台仅作为统一run内部组件，不保留独立console命令。run需要完整worker配置；单次status/issues/sync/recheck仍仅需数据库，issues内部交互处理按动作决定是否需要账本，普通CLI issues仍只读且只需数据库；公开resolve已删除。控制台命令复用同一能力判定，不能复制一套依赖表。
 
 run必须在创建worker前拒绝非TTY；无人值守显式使用worker。启动器不自动migrate、搜索父目录配置或切换到Docker，不因为删去参数而改变数据和配置来源。
+
+## 固定服务超时契约
+
+- 范围：账本HTTP、AI HTTP和IMAP连接，统一30秒；这是客户端超时参数，不承诺整个worker阶段30秒内结束。
+- 接口：移除Settings.ledger_timeout_seconds、Settings.ai_timeout_seconds和MailSettings.timeout_seconds。客户端测试依赖注入不等同用户配置。
+- 输入：EBKI_LEDGER_TIMEOUT_SECONDS、EBKI_AI_TIMEOUT_SECONDS、EBKI_IMAP_TIMEOUT_SECONDS不再读取；对应.env.example、Compose和日常.env条目移除。
+- 错误：旧TOML超时键提示删除，不能引导迁移到已删除变量。旧进程环境变量不参与校验或覆盖，不为此额外阻断启动。
+- 正常：未配置超时的三个真实构造路径都取得30秒；基础：旧环境变量即使写成不同值也不能改变该值；错误：删除.env示例但保留另一处可配置入口。
+- 验证：三个构造路径固定值、旧环境变量无效、旧TOML拒绝与安全错误、Compose映射移除。
+- 正确：单一常量驱动运行超时；错误：Settings、Compose和客户端各保留一份可编辑默认值。

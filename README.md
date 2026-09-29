@@ -55,16 +55,13 @@ uv sync --frozen
 | `EBKI_DATABASE_URL` | importer PostgreSQL 连接串；所有实际维护命令必需 |
 | `EBKI_LEDGER_URL` | ezBookkeeping 站点根地址，可含部署子路径，不加 `/api/v1` |
 | `EBKI_LEDGER_TOKEN` | ezBookkeeping API Token |
-| `EBKI_LEDGER_TIMEOUT_SECONDS` | 账本 HTTP 超时，默认 30 秒 |
 | `EBKI_AI_URL`、`EBKI_AI_MODEL`、`EBKI_AI_TOKEN` | 模型地址、模型名、API Key；地址通常以 `/v1` 结尾 |
-| `EBKI_AI_TIMEOUT_SECONDS` | 模型 HTTP 超时，默认 30 秒 |
 | `EBKI_IMAP_HOST`、`EBKI_IMAP_PORT` | 默认 `imap.qq.com`、`993` |
 | `EBKI_IMAP_USERNAME`、`EBKI_IMAP_PASSWORD` | IMAP 登录名及凭据；QQ 使用邮箱地址和 IMAP 授权码 |
-| `EBKI_IMAP_TIMEOUT_SECONDS` | IMAP 超时，默认 30 秒 |
 
 日志级别在 `config.toml` 顶层设置 `log_level = "INFO"`，支持 `DEBUG/INFO/WARNING/ERROR/CRITICAL`，修改后重启进程。目录固定为相对工作目录的 `data/email`、`data/reports`、`data/logs`；应用日志固定按 10 MiB 轮转，保留 5 个归档。
 
-端口、超时和日志级别在使用前校验。必需项缺失时列出变量名，不回显输入秘密。按命令检查依赖：
+账本、AI 和 IMAP 客户端超时统一固定为 30 秒，不提供环境变量或 TOML 配置。端口和日志级别在使用前校验。必需项缺失时列出变量名，不回显输入秘密。按命令检查依赖：
 
 | 命令 | 必需服务配置 |
 | --- | --- |
@@ -101,7 +98,7 @@ uv sync --frozen
 
 删除普通消费的 `[[accounts]]` 配置，在 ezBookkeeping 对应账户的描述中填写银行卡号；已有决定保留冻结账户和币种，不因描述修改自动重新映射。旧账户映射会明确报告迁移提示。`repayments` 仍保留。新交易直接原币入账，旧人民币暂估的已保存任务仍可恢复和结算。
 
-将 TOML 中 `ledger_url/ai_url/ai_model`、`mail.host/port/username/timeout_seconds` 等服务连接字段移到上述环境变量，并从 TOML 删除旧字段；已有四个秘密变量名保持不变。旧键不会被静默覆盖或忽略，即使同时设置了环境变量，也会报告需要迁移的键与目标变量。程序不会自动改写现有 `config.toml` 或 `.env`。
+将 TOML 中 `ledger_url/ai_url/ai_model`、`mail.host/port/username` 等服务连接字段移到上述环境变量，并从 TOML 删除旧字段；已有四个秘密变量名保持不变。旧键不会被静默覆盖或忽略，即使同时设置了环境变量，也会报告需要迁移的键与目标变量。程序不会自动改写现有 `config.toml` 或 `.env`。旧 `ledger_timeout_seconds`、`ai_timeout_seconds`、`mail.timeout_seconds` 必须删除，无需迁移到环境变量。
 
 目录和日志轮转参数不再对外配置，请删除 TOML 中的 `evidence_dir/report_dir/log_dir/log_max_bytes/log_backups`。旧 `.env` 中的 `EBKI_EVIDENCE_DIR/EBKI_REPORT_DIR/EBKI_LOG_DIR/EBKI_LOG_MAX_BYTES/EBKI_LOG_BACKUPS/EBKI_LOG_LEVEL` 已不读取；日志级别改到 TOML 顶层。Docker 网络和用户直接通过 Docker 配置管理，删除旧 `EBKI_DOCKER_NETWORK/EBKI_UID/EBKI_GID`。使用过自定义目录的部署，切换前应停止 worker，将已有数据迁入固定目录或调整 Compose 的宿主机挂载源，容器目标路径保持 `/app/data/*`。
 

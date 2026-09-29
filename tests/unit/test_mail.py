@@ -9,6 +9,7 @@ from ezbookkeeping_importer.adapters.mail import MailClient
 
 class FakeIMAP:
     def __init__(self, *args, **kwargs):
+        assert kwargs["timeout"] == 30
         assert kwargs["ssl_context"].verify_mode == ssl.CERT_REQUIRED
         assert kwargs["ssl_context"].check_hostname
         self.calls = []
@@ -51,7 +52,6 @@ def client():
             port=993,
             username="synthetic",
             password=SecretStr("synthetic"),
-            timeout_seconds=20,
         ),
         connection_factory=FakeIMAP,
     )

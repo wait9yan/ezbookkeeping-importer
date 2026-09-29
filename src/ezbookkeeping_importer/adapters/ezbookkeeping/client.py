@@ -7,6 +7,8 @@ import httpx
 
 from ezbookkeeping_importer.domain.errors import LedgerError, LedgerRejected
 
+from ..network import SERVICE_TIMEOUT_SECONDS
+
 __all__ = ["EzBookkeepingClient", "LedgerError", "LedgerRejected"]
 
 PAGE_SIZE = 50
@@ -47,7 +49,12 @@ def _flatten(
 
 class EzBookkeepingClient:
     def __init__(
-        self, base_url: str, token: str, timeout: float = 30, *, client: httpx.Client | None = None
+        self,
+        base_url: str,
+        token: str,
+        timeout: float = SERVICE_TIMEOUT_SECONDS,
+        *,
+        client: httpx.Client | None = None,
     ):
         self._base = base_url.rstrip("/") + "/api/v1/"
         self._headers = {
