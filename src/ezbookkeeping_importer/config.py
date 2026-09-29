@@ -150,7 +150,7 @@ ENV_FIELDS = {
     "mail.password": "EBKI_IMAP_PASSWORD",
     "mail.timeout_seconds": "EBKI_IMAP_TIMEOUT_SECONDS",
 }
-LOCAL_COMMANDS = {"migrate", "status", "issues", "sync", "resolve"}
+LOCAL_COMMANDS = {"migrate", "status", "issues", "sync", "recheck", "resolve"}
 
 
 def command_capabilities(

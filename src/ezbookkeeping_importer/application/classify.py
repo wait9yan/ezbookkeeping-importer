@@ -5,11 +5,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from ..domain.errors import ImporterError, LogPersistenceError
+from ..domain.errors import ImporterError, LedgerError, LogPersistenceError
 from ..domain.money import cents
 from ..domain.accounts import AccountMatchError, match_account, decision_currency
 from .ports import Classifier, Ledger, Store
 from .records import source_row
+from .recheck import is_duplicate_recheck
 from .events import emit, blocked, Progress, failure_fields
 
 
@@ -205,9 +206,47 @@ def refresh_classification(
     }
 
 
-def _classify_one(store, settings, ledger, ai, transaction):
+def _search_candidates(ledger, payload, search_results):
+    window = (payload["time"] - 86400, payload["time"] + 86400)
+    if window not in search_results:
+        try:
+            search_results[window] = ledger.search(*window)
+        except LedgerError as exc:
+            search_results[window] = exc
+    result = search_results[window]
+    if isinstance(result, LedgerError):
+        raise result
+    return result
+
+
+def _save_duplicate_query_failure(store, transaction, import_decision, exc):
+    with store.transaction():
+        changed = store.execute(
+            """UPDATE bank_transactions SET import_status='issue',import_decision=%s,import_error=%s
+            WHERE id=%s AND decision_version=%s AND import_status='pending'""",
+            (
+                import_decision,
+                {
+                    "code": "duplicate_check_failed",
+                    "detail": {
+                        "error_type": type(exc).__name__,
+                        "reason": "账本查重查询未完成；修复后执行 recheck 再检查一次",
+                    },
+                    "decision_version": transaction["decision_version"],
+                },
+                transaction["id"],
+                transaction["decision_version"],
+            ),
+        )
+    return ("duplicate_check_failed" if changed.rowcount else "unchanged"), {
+        "error_type": type(exc).__name__
+    }
+
+
+def _classify_one(store, settings, ledger, ai, transaction, search_results):
     saved = transaction.get("import_decision") or {}
-    if saved.get("payload") and saved.get("reclassify_requested"):
+    rechecking = is_duplicate_recheck(transaction)
+    if saved.get("payload") and saved.get("reclassify_requested") and not rechecking:
         import_decision = refresh_classification(transaction, settings, ledger, ai)
     else:
         import_decision = (
@@ -215,7 +254,9 @@ def _classify_one(store, settings, ledger, ai, transaction):
         )
     classification = import_decision.get("classification") or {}
     category = (
-        None
+        "decision_reused"
+        if rechecking
+        else None
         if not classification
         else (
             "rule_matched"
@@ -226,7 +267,10 @@ def _classify_one(store, settings, ledger, ai, transaction):
         )
     )
     payload = import_decision["payload"]
-    candidates = ledger.search(payload["time"] - 86400, payload["time"] + 86400)
+    try:
+        candidates = _search_candidates(ledger, payload, search_results)
+    except LedgerError as exc:
+        return _save_duplicate_query_failure(store, transaction, import_decision, exc)
     exact_sources = [
         c
         for c in candidates
@@ -261,7 +305,7 @@ def _classify_one(store, settings, ledger, ai, transaction):
                     ),
                 )
                 store.execute(
-                    "UPDATE bank_transactions SET import_status='unknown',import_decision=%s WHERE id=%s",
+                    "UPDATE bank_transactions SET import_status='unknown',import_decision=%s,import_error=NULL WHERE id=%s",
                     (import_decision, transaction["id"]),
                 )
                 recovered = True
@@ -311,7 +355,9 @@ def _classify_one(store, settings, ledger, ai, transaction):
             "UPDATE bank_transactions SET import_decision=%s WHERE id=%s",
             (import_decision, transaction["id"]),
         )
-        if duplicates and not (current.get("import_decision") or {}).get("allow_new"):
+        if duplicates and (
+            rechecking or not (current.get("import_decision") or {}).get("allow_new")
+        ):
             store.execute(
                 "UPDATE bank_transactions SET import_status='issue' WHERE id=%s",
                 (transaction["id"],),
@@ -374,11 +420,14 @@ def classify_pending(
     if not transactions:
         return
     progress = Progress("classification", len(transactions))
+    search_results: dict[tuple[int, int], list[dict] | LedgerError] = {}
     blocked_objects = defaultdict(list)
     emit("classification_started", stage="classification", total=len(transactions))
     for transaction in transactions:
         try:
-            outcome, fields = _classify_one(store, settings, ledger, ai, transaction)
+            outcome, fields = _classify_one(
+                store, settings, ledger, ai, transaction, search_results
+            )
         except LogPersistenceError:
             raise
         except Exception as exc:
@@ -443,6 +492,18 @@ def classify_pending(
                 decision_version=transaction["decision_version"],
                 next_action="verify_only",
             )
+        elif outcome == "duplicate_check_failed":
+            blocked_objects[outcome].append((transaction["id"], transaction["decision_version"]))
+            emit(
+                "duplicate_check_failed",
+                level=logging.DEBUG,
+                transaction_id=transaction["id"],
+                decision_version=transaction["decision_version"],
+                error_code=outcome,
+                error_type=fields["error_type"],
+                stage="duplicate_check",
+                next_action="recheck",
+            )
         elif outcome == "duplicate_candidates":
             blocked_objects[outcome].append((transaction["id"], transaction["decision_version"]))
             emit(
@@ -460,6 +521,16 @@ def classify_pending(
                 counts[fields["classification_count"]] = 1
             progress.advance(**counts)
     for reason, objects in blocked_objects.items():
+        if reason == "duplicate_check_failed":
+            emit(
+                "duplicate_check_failed",
+                level=logging.ERROR,
+                stage="duplicate_check",
+                error_code=reason,
+                affected_count=len(objects),
+                next_action="recheck",
+            )
+            continue
         blocked(
             "transaction_blocked",
             identity=repr(objects),

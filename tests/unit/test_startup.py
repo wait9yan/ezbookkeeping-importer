@@ -209,7 +209,11 @@ def test_stop_request_precedes_wait_for_accepted_command(tmp_path, monkeypatch):
         def execute(args):
             started.set()
             assert release.wait(5)
-            return {"finished_command": True}
+            return {
+                "email_sync_checkpoint": [], "email_source_item": [], "email": [],
+                "bank_transactions": [], "background_task": [], "issues": 0,
+                "issue_object_count": 0, "issue_groups": [],
+            }
 
         async def interact(*args, **kwargs):
             await original(*args, **kwargs, execute=execute)
@@ -230,7 +234,7 @@ def test_stop_request_precedes_wait_for_accepted_command(tmp_path, monkeypatch):
             assert "等待已接受" in output.getvalue()
             release.set()
             await task
-            assert "finished_command" in output.getvalue()
+            assert "当前没有问题诊断" in output.getvalue()
             assert_finished(tmp_path)
         finally:
             release.set()

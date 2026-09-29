@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 from collections.abc import Callable
-import json
 import logging
 import shlex
 
@@ -14,6 +13,7 @@ from ..application.events import EVENT_LABELS, format_event
 from ..domain.errors import ImporterError
 from . import cli
 from .log_tail import LogNotice, LogTailer
+from .presentation import help_text, render_help, render_result
 
 POLL_SECONDS = 0.25
 LEVEL_STYLES = {
@@ -30,7 +30,9 @@ class CommandInputError(ImporterError):
 
 
 class CommandHelp(Exception):
-    pass
+    def __init__(self, command=None):
+        self.command = command
+        super().__init__(help_text(command))
 
 
 class ConsoleArgumentParser(argparse.ArgumentParser):
@@ -38,7 +40,8 @@ class ConsoleArgumentParser(argparse.ArgumentParser):
         raise CommandInputError(message)
 
     def print_help(self, file=None):
-        raise CommandHelp(self.format_help())
+        command = self.prog.split()[-1]
+        raise CommandHelp(command if command in cli.CONSOLE_COMMANDS else None)
 
 
 def parse_line(line: str, config_path: str):
@@ -51,10 +54,10 @@ def parse_line(line: str, config_path: str):
     parser = cli.build_parser(interactive=True, parser_class=ConsoleArgumentParser)
     if words[0] == "help":
         if len(words) == 1:
-            raise CommandHelp(parser.format_help() + "\nhelp [命令] 查看帮助；exit 退出控制台。")
-        if len(words) != 2 or words[1] not in cli.CONSOLE_COMMANDS:
-            raise CommandInputError("用法：help [status|issues|sync|resolve]")
-        words = [words[1], "--help"]
+            raise CommandHelp()
+        if len(words) != 2 or words[1] not in (*cli.CONSOLE_COMMANDS, "exit"):
+            raise CommandInputError("用法：help [" + "|".join((*cli.CONSOLE_COMMANDS, "exit")) + "]")
+        raise CommandHelp(words[1])
     if words[0] == "exit":
         if len(words) != 1:
             raise CommandInputError("用法：exit")
@@ -85,19 +88,6 @@ def render_log(console: Console, record: dict | LogNotice, minimum_level: str):
     console.print(text)
 
 
-def render_result(console: Console, command: str, result):
-    if command == "sync":
-        console.print(
-            "同步请求已排队。" if result["queued"] else "同步请求已合并到现有待处理任务。"
-        )
-    elif command == "resolve":
-        if result.get("result") == "intent recorded; external outcome must be verified":
-            console.print("处理意图已保存；现有写入结果仍待核实。")
-        else:
-            console.print("处理决定已保存；后台执行结果请查看后续事件或 issues。")
-    console.print_json(json.dumps(result, ensure_ascii=False, default=str))
-
-
 async def _execute(args, console: Console, execute: Callable):
     try:
         # Runtime 的创建、使用和关闭全部发生在这一次调用的线程内。
@@ -106,7 +96,7 @@ async def _execute(args, console: Console, execute: Callable):
         error = cli.command_error(exc)
         console.print(Text(f"命令失败（{error['error_type']}）：{error['message']}", style="red"))
     else:
-        render_result(console, args.command, result)
+        render_result(console, args.command, result, args)
 
 
 async def _follow(tailer: LogTailer, console: Console, minimum_level: str, stopped: asyncio.Event):
@@ -174,7 +164,7 @@ async def interact(
             try:
                 args = parse_line(line, config_path)
             except CommandHelp as exc:
-                console.print(Text(str(exc)))
+                render_help(console, exc.command)
                 continue
             except CommandInputError as exc:
                 console.print(Text(f"命令未接受：{exc}", style="yellow"))

@@ -43,6 +43,7 @@ EVENT_LABELS = {
     "classification_completed": "本轮分类汇总",
     "transaction_blocked": "交易待处理",
     "classification_failed": "交易分类失败",
+    "duplicate_check_failed": "账本查重查询未完成",
     "existing_marker_found": "发现既有来源标记",
     "write_tasks_queued": "写入任务已排队",
     "write_preflight_blocked": "写入预检未通过",

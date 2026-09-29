@@ -37,7 +37,9 @@ def environment(monkeypatch, values=ENV):
 
 
 @pytest.mark.parametrize("log_level", [None, "WARNING"])
-def test_removed_environment_options_do_not_override_runtime_defaults(config, monkeypatch, log_level):
+def test_removed_environment_options_do_not_override_runtime_defaults(
+    config, monkeypatch, log_level
+):
     environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
     environment(
         monkeypatch,
@@ -82,7 +84,7 @@ def test_fixed_runtime_settings_cannot_be_overridden_in_toml(config, monkeypatch
     assert "SECRET_PATH" not in str(error.value)
 
 
-@pytest.mark.parametrize("command", ["migrate", "status", "issues", "sync"])
+@pytest.mark.parametrize("command", ["migrate", "status", "issues", "sync", "recheck"])
 def test_local_commands_only_require_database_connection(config, monkeypatch, command):
     environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
     settings = load_settings(str(config), command=command)
@@ -269,6 +271,7 @@ def constructors(monkeypatch):
         ("status", None, None, {"PostgresStore"}),
         ("issues", None, None, {"PostgresStore"}),
         ("sync", None, None, {"PostgresStore"}),
+        ("recheck", None, None, {"PostgresStore"}),
         ("resolve", "ignore", None, {"PostgresStore"}),
         ("resolve", "link", None, {"PostgresStore", "EzBookkeepingClient"}),
         ("resolve", "retry", "123", {"PostgresStore", "EzBookkeepingClient"}),
@@ -439,7 +442,9 @@ def test_invalid_url_and_port_have_safe_actionable_reasons(config, monkeypatch):
     assert "SECRET" not in message
 
 
-@pytest.mark.parametrize("command", ["migrate", "status", "issues", "sync", "worker", "doctor"])
+@pytest.mark.parametrize(
+    "command", ["migrate", "status", "issues", "sync", "recheck", "worker", "doctor"]
+)
 def test_runtime_database_creation_is_capability_controlled(
     config, monkeypatch, constructors, command
 ):
@@ -522,3 +527,33 @@ def test_run_and_worker_share_capabilities_and_required_configuration(config, mo
         load_settings(str(config), command="run")
     environment(monkeypatch)
     assert load_settings(str(config), command="run") == load_settings(str(config), command="worker")
+
+
+def test_recheck_cli_uses_local_dispatch_and_preserves_json(config, monkeypatch, capsys):
+    import json
+
+    environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
+    monkeypatch.setattr("sys.argv", ["ebki", "--config", str(config), "recheck"])
+    store = object()
+    closed = []
+    result = {"scheduled": 3, "already_pending": 2, "skipped": 1}
+    runtime = SimpleNamespace(store=store, close=lambda: closed.append(True))
+    monkeypatch.setattr(cli, "Runtime", lambda *a, **k: runtime)
+
+    def schedule(actual_store):
+        assert actual_store is store
+        return result
+
+    monkeypatch.setattr(cli, "request_recheck", schedule)
+    assert cli.main() == 0
+    assert json.loads(capsys.readouterr().out) == result
+    assert closed == [True]
+
+
+def test_recheck_accepts_no_batch_bypass_options():
+    for interactive in (False, True):
+        parser = cli.build_parser(interactive=interactive)
+        assert cli.parse_command(parser, ["recheck"]).command == "recheck"
+        with pytest.raises(SystemExit) as error:
+            cli.parse_command(parser, ["recheck", "--action", "confirm-new"])
+        assert error.value.code == 2

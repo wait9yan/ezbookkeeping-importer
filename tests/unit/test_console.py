@@ -38,6 +38,14 @@ def screen():
     return Console(file=stream, width=200, color_system=None), stream
 
 
+def empty_status():
+    return {
+        "email_source_item": [], "email": [], "bank_transactions": [],
+        "background_task": [], "email_sync_checkpoint": [], "issues": 0,
+        "issue_object_count": 0, "issue_groups": [],
+    }
+
+
 def test_parser_reuses_cli_parameters_and_preserves_quoted_reason():
     line = (
         "resolve bank_transactions abc --version 2 --action retry "
@@ -73,11 +81,12 @@ def test_console_rejects_invalid_commands_without_exiting(line):
         console.parse_line(line, "synthetic.toml")
 
 
-@pytest.mark.parametrize("line", ["help", "help resolve", "sync --help"])
+@pytest.mark.parametrize("line", ["help", "help resolve", "sync --help", "help recheck", "help exit"])
 def test_console_help_does_not_print_outside_output_proxy(line, capsys):
     with pytest.raises(console.CommandHelp) as result:
         console.parse_line(line, "synthetic.toml")
-    assert "usage:" in str(result.value)
+    assert "用法：" in str(result.value)
+    assert "usage:" not in str(result.value)
     assert capsys.readouterr() == ("", "")
 
 
@@ -237,14 +246,14 @@ def test_command_runtime_lives_and_closes_in_execution_thread(monkeypatch):
 
     monkeypatch.setattr(cli, "Runtime", Runtime)
     monkeypatch.setattr(cli, "load_settings", lambda *a, **k: object())
-    monkeypatch.setattr(cli.maintenance, "status", lambda store: {"synthetic": True})
+    monkeypatch.setattr(cli.maintenance, "status", lambda store: empty_status())
     display, output = screen()
     args = console.parse_line("status", "synthetic.toml")
     asyncio.run(console._execute(args, display, cli.execute_command))
     assert [item[0] for item in calls] == ["open", "close"]
     assert calls[0][1] == calls[1][1] != main_thread
     assert calls[0][2]["command"] == "status"
-    assert "synthetic" in output.getvalue()
+    assert "当前没有问题诊断" in output.getvalue()
 
 
 def test_command_failure_is_visible_safe_and_closes_runtime(monkeypatch):
@@ -322,7 +331,7 @@ def test_slow_command_does_not_block_help_logs_ctrl_c_or_exit(tmp_path):
             executed.append(args.command)
             started.set()
             assert release.wait(3)
-            return {"synthetic": True}
+            return empty_status()
 
         runner = asyncio.create_task(
             interact("synthetic.toml", path, "INFO", session, display, execute=execute)
@@ -344,8 +353,7 @@ def test_slow_command_does_not_block_help_logs_ctrl_c_or_exit(tmp_path):
             assert executed == ["status"]
             release.set()
             await asyncio.wait_for(runner, 3)
-            assert "synthetic" in output.getvalue()
-            assert "synthetic" in output.getvalue()
+            assert "当前没有问题诊断" in output.getvalue()
         finally:
             release.set()
             if not runner.done():
@@ -370,14 +378,18 @@ def test_real_prompt_session_handles_completion_history_chinese_and_ctrl_c(tmp_p
         session = PromptSession(
             input=pipe,
             output=DummyOutput(),
-            completer=WordCompleter(["status", "issues", "resolve", "exit"]),
+            completer=WordCompleter([*cli.CONSOLE_COMMANDS, "exit"]),
             history=InMemoryHistory(),
         )
         executed = []
 
         def execute(args):
             executed.append(args)
-            return {"command_finished": len(executed)}
+            if args.command == "resolve":
+                return {"result": "decision saved", "action": args.action}
+            if args.command == "recheck":
+                return {"scheduled": 3, "already_pending": 0, "skipped": 0}
+            return empty_status()
 
         runner = asyncio.create_task(
             interact("c.toml", path, "INFO", session, display, execute=execute)
@@ -389,14 +401,18 @@ def test_real_prompt_session_handles_completion_history_chinese_and_ctrl_c(tmp_p
                 file.write(event("collection_progress", processed=1, total=2))
             await wait_until(lambda: "邮件采集进度" in output.getvalue())
             pipe.send_text("\t\r")
-            await wait_until(lambda: output.getvalue().count("command_finished") == 1)
+            await wait_until(lambda: output.getvalue().count("当前没有问题诊断") == 1)
             pipe.send_text("\x1b[A\r")
-            await wait_until(lambda: output.getvalue().count("command_finished") == 2)
+            await wait_until(lambda: output.getvalue().count("当前没有问题诊断") == 2)
             pipe.send_text("resolve bank_transactions abc --action retry --reason 中文理由\r")
-            await wait_until(lambda: output.getvalue().count("command_finished") == 3)
+            await wait_until(lambda: "处理决定已保存" in output.getvalue())
+            pipe.send_text("rech")
+            await asyncio.sleep(0.05)
+            pipe.send_text("\t\r")
+            await wait_until(lambda: "本次安排一次复查" in output.getvalue())
             pipe.send_text("do-not-run-this\x03")
             await asyncio.wait_for(runner, 3)
-            assert [args.command for args in executed] == ["status", "status", "resolve"]
+            assert [args.command for args in executed] == ["status", "status", "resolve", "recheck"]
             assert executed[2].reason == "中文理由"
             assert "命令未接受" not in output.getvalue()
         finally:

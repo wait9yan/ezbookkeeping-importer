@@ -9,12 +9,13 @@ from pydantic import ValidationError
 from ..application import maintenance
 from ..application.collect import request_sync, validate_scan_range
 from ..application.resolve import resolve
+from ..application.recheck import request_recheck
 from ..bootstrap import Runtime
 from ..config import load_settings
 from ..domain.errors import ImporterError, LogPersistenceError
 from .worker import run
 
-CONSOLE_COMMANDS = ("status", "issues", "sync", "resolve")
+CONSOLE_COMMANDS = ("status", "issues", "sync", "recheck", "resolve")
 
 
 def output(value):
@@ -36,6 +37,7 @@ def build_parser(*, interactive=False, parser_class=argparse.ArgumentParser):
         parser.add_argument("--config", default="config.toml")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    commands.add_parser("recheck", help="安排一次重复候选复查；通过正常检查后继续入账")
     if not interactive:
         for name in ("migrate", "doctor", "restore-audit", "run"):
             commands.add_parser(name)
@@ -104,6 +106,8 @@ def _execute(args, runtime):
         }
     if args.command == "status":
         return maintenance.status(store)
+    if args.command == "recheck":
+        return request_recheck(store)
     if args.command == "issues":
         return maintenance.issues(store, args.entity_type, args.entity_id)
     if args.command == "resolve":
