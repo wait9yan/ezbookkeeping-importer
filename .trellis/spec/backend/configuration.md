@@ -4,7 +4,7 @@
 
 ## 来源契约
 
-- `config.toml`：业务策略、还款历史映射、商户规则、分类模式、写入开关、时区与来源规则；`mail.source_id` 为稳定业务身份。
+- `config.toml`：业务策略、还款历史映射、商户规则、分类模式、时区；`mail.source_id` 为稳定业务身份。
 - 进程环境：数据库；账本地址/Token/超时；AI 地址/模型/Key/超时；IMAP 主机/端口/用户名/授权码/超时；原件/报告/日志目录及轮转参数。
 - `.env.example` 列出环境变量和默认值；本地使用 `uv run --env-file .env ebki --config config.toml ...` 显式加载。已有进程环境优先。应用不引入第二个 dotenv 加载器。
 - Compose 显式映射同一组变量，但不能用 `${TOKEN:?}` 预先要求所有凭据，否则数据库维护命令无法执行。Docker 网络是部署层必需条件，独立于应用的命令依赖。
@@ -18,7 +18,6 @@
 | --- | --- |
 | migrate | 数据库与显式数据库初始化能力；仅缺库时经同实例维护库创建目标 |
 | status、issues、sync | 数据库；不构造不使用的外部客户端和文件目录 |
-| import-eml | 数据库与原件存储；没有 IMAP/模型凭据也能保存原件 |
 | resolve 本地决定 | 数据库 |
 | resolve link、带 account-id 的账户修正、restore-audit | 数据库与账本 |
 | worker | 数据库、账本、IMAP、流水线与存储；AI 模式额外要求 AI 服务 |
@@ -34,10 +33,18 @@
 
 ## 路径与部署
 
-本地运行目录默认相对工作目录的 `var/*`，容器默认 `/app/var/*` 并对应宿主机 `./var/*` 挂载。用户通过 `EBKI_*_DIR` 覆盖 Compose 路径时必须提供绝对路径，同一值用于宿主机源、容器目标和应用环境。秘密不打包；sdist 包含 `.env.example`，不包含 `.env` 或运行配置。
+本地运行目录默认相对工作目录的 `data/email`、`data/reports`、`data/logs`，容器默认 `/app/data/*` 并对应宿主机 `./data/*` 挂载。用户通过 `EBKI_*_DIR` 覆盖 Compose 路径时必须提供绝对路径，同一值用于宿主机源、容器目标和应用环境。秘密不打包；sdist 包含 `.env.example`，不包含 `.env` 或运行配置。
 
 ## 必需回归
 
 环境变量实际生效；业务规则保留；旧键明确迁移；必需项和非法值不泄露；按命令依赖矩阵；rules_only 无 AI；超时透传；资源构造失败清理；实际 uv 加载合成 `.env`；Compose 空凭据配置渲染；默认与覆盖路径挂载一致。
 
-普通消费不再接受 `accounts` 配置，改从 ezBookkeeping 账户描述解析卡号，再按邮件原币唯一匹配。新流程不用汇率，`exchange_rate_max_age_hours` 也已删除并提示迁移。旧配置必须明确提示迁移，不能与远端描述共同构成两个映射来源；契约见 [卡号匹配与原币入账](account-matching.md)。
+普通消费不再接受 `accounts` 配置，改从 ezBookkeeping 账户描述解析卡号，再按邮件原币唯一匹配。新流程不用汇率，不保留汇率时效配置或专用迁移检查。旧账户映射必须明确提示迁移，不能与远端描述共同构成两个映射来源；契约见 [卡号匹配与原币入账](account-matching.md)。
+
+## 2026-09-28 自动运行与扫描配置
+
+worker 默认自动写入通过来源、分类、账户及查重校验的任务，退款直接按负支出处理。删除 writes_enabled、refund_ownership_confirmed 及其附属 historical_boundary_reviewed；旧键必须明确提示删除，不静默迁移。暂停使用停止 worker，恢复先停止 worker 并执行 restore-audit。
+
+IMAP 为唯一正式采集渠道，QQ 仅为服务商与专用认证策略；删除 import-eml 命令及其能力分支，原件文件格式仍为 .eml。首次常规同步全量，后续 UID 增量，跨日按 mail.rescan_days 回扫（严格非负整数，默认7，0禁用）。UIDVALIDITY变化重新全量，有界手工补扫不改变常规游标。
+
+source_policy 与 trusted_authserv_id 已删除，旧键明确迁移报错。来源认证按 mail.host 自动选择已实现的邮箱适配；当前内置 imap.qq.com，未知主机不继承 QQ 信任。人工 accept-source 仅用于具体来源项的异常处理，记录理由和时间，不改写 requires_acceptance 认证结论；同一业务来源下其他可信来源可驱动原件继续处理。

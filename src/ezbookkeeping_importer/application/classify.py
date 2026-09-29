@@ -7,6 +7,7 @@ from ..domain.errors import ImporterError
 from ..domain.money import cents
 from ..domain.accounts import AccountMatchError, match_account, decision_currency
 from .ports import Classifier, Ledger, Store
+from .records import source_row
 
 
 def effective(mapping, day: date) -> bool:
@@ -47,7 +48,7 @@ def validate_target(ledger: Ledger, payload: dict, currency: str):
 
 
 def classify_expense(transaction: dict, settings, ledger: Ledger, ai: Classifier | None):
-    facts = transaction["facts"]
+    facts = source_row(transaction)
     categories = ledger.categories()
     eligible = [c for c in categories if category_valid(c, 2)]
     fallback = [c for c in eligible if c.get("path") == "其他杂项 → 待分类"]
@@ -104,7 +105,7 @@ def repayment_mapping(facts: dict, settings):
 
 
 def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -> dict:
-    facts = transaction["facts"]
+    facts = source_row(transaction)
     event = facts["event_type"]
     day = date.fromisoformat(facts["occurred_date"])
     if facts["occurred_at"]:
@@ -140,8 +141,6 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
             "destinationAmount": cents(amount),
         }
     elif event in {"expense", "refund"}:
-        if event == "refund" and not settings.refund_ownership_confirmed:
-            raise ImporterError("refund cross-channel ownership requires configuration")
         if (event == "expense" and amount <= 0) or (event == "refund" and amount >= 0):
             raise ImporterError("event sign contradicts bank evidence")
         if currency not in {"CNY", "USD"}:
@@ -159,7 +158,7 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
         }
     else:
         raise ImporterError("unsupported event type")
-    marker = transaction["marker"]
+    source_marker = transaction["source_marker"]
     detail = facts["merchant_raw"]
     if facts["time_precision"] != "second":
         detail += " 来源仅提供日期"
@@ -167,8 +166,8 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
         {
             "time": int(instant.timestamp()),
             "utcOffset": offset,
-            "comment": marker + " " + detail[: 254 - len(marker)],
-            "clientSessionId": marker,
+            "comment": source_marker + " " + detail[: 254 - len(source_marker)],
+            "clientSessionId": source_marker,
         }
     )
     validate_target(ledger, payload, currency)
@@ -184,17 +183,17 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
 def refresh_classification(
     transaction: dict, settings, ledger: Ledger, ai: Classifier | None
 ) -> dict:
-    saved = transaction["decision"]
+    saved = transaction["import_decision"]
     payload = dict(saved["payload"])
     if payload["type"] == 3:
         category_id, classification = classify_expense(transaction, settings, ledger, ai)
         payload["categoryId"] = category_id
     else:
-        payload["categoryId"] = repayment_mapping(transaction["facts"], settings).category_id
+        payload["categoryId"] = repayment_mapping(source_row(transaction), settings).category_id
         classification = saved.get("classification")
     validate_target(ledger, payload, decision_currency(transaction))
     # A retry refreshes only category choice. The previously persisted amount, quote,
-    # time, source marker and any manually corrected account remain authoritative.
+    # time, source source_marker and any manually corrected account remain authoritative.
     return {
         **saved,
         "payload": payload,
@@ -213,7 +212,7 @@ def classify_pending(
 ):
     if transaction_ids == frozenset():
         return
-    query = "SELECT * FROM transactions WHERE state='pending'"
+    query = "SELECT * FROM bank_transactions WHERE import_status='pending'"
     params: tuple[str, ...] = ()
     if transaction_ids is not None:
         params = tuple(sorted(transaction_ids))
@@ -221,63 +220,54 @@ def classify_pending(
         query += f" AND id IN ({placeholders})"
     for transaction in store.all(query + " ORDER BY id", params):
         try:
-            saved = transaction.get("decision") or {}
+            saved = transaction.get("import_decision") or {}
             if saved.get("payload") and saved.get("reclassify_requested"):
-                decision = refresh_classification(transaction, settings, ledger, ai)
+                import_decision = refresh_classification(transaction, settings, ledger, ai)
             else:
-                decision = (
+                import_decision = (
                     saved if saved.get("payload") else decide(transaction, settings, ledger, ai)
                 )
-            payload = decision["payload"]
+            payload = import_decision["payload"]
             candidates = ledger.search(payload["time"] - 86400, payload["time"] + 86400)
             exact_sources = [
                 c
                 for c in candidates
                 if re.search(
-                    r"(?<![\w-])" + re.escape(transaction["marker"]) + r"(?![\w-])",
+                    r"(?<![\w-])" + re.escape(transaction["source_marker"]) + r"(?![\w-])",
                     c.get("comment", ""),
                 )
             ]
             if exact_sources:
                 with store.transaction():
                     current = store.one(
-                        "SELECT * FROM transactions WHERE id=%s FOR UPDATE", (transaction["id"],)
+                        "SELECT * FROM bank_transactions WHERE id=%s FOR UPDATE",
+                        (transaction["id"],),
                     )
                     if (
                         current
-                        and current["version"] == transaction["version"]
-                        and current["state"] == "pending"
+                        and current["decision_version"] == transaction["decision_version"]
+                        and current["import_status"] == "pending"
                     ):
                         store.execute(
-                            """INSERT INTO jobs(transaction_id,kind,version,operation_key,payload,status,target_id)
+                            """INSERT INTO background_task(bank_transaction_id,task_type,decision_version,operation_key,payload,status,ledger_transaction_id)
                             VALUES (%s,'create',%s,%s,%s,'unknown',%s) ON CONFLICT(operation_key) DO UPDATE SET
-                            status='unknown',version=excluded.version,payload=excluded.payload,target_id=excluded.target_id
-                            WHERE jobs.status IN ('cancelled','rejected')""",
+                            status='unknown',decision_version=excluded.decision_version,payload=excluded.payload,ledger_transaction_id=excluded.ledger_transaction_id
+                            WHERE background_task.status IN ('cancelled','rejected')""",
                             (
                                 transaction["id"],
-                                transaction["version"],
-                                transaction["marker"],
+                                transaction["decision_version"],
+                                transaction["source_marker"],
                                 payload,
                                 str(exact_sources[0]["id"]) if len(exact_sources) == 1 else None,
                             ),
                         )
                         store.execute(
-                            "UPDATE transactions SET state='unknown',decision=%s WHERE id=%s",
-                            (decision, transaction["id"]),
+                            "UPDATE bank_transactions SET import_status='unknown',import_decision=%s WHERE id=%s",
+                            (import_decision, transaction["id"]),
                         )
-                        store.issue(
-                            "write_unknown",
-                            transaction["id"],
-                            {
-                                "version": transaction["version"],
-                                "candidate_ids": [str(c["id"]) for c in exact_sources],
-                                "reason": "persistent source marker already exists",
-                            },
-                        )
-                        store.audit(
-                            "existing_source_recovered",
-                            transaction["id"],
-                            {"matches": len(exact_sources)},
+                        store.execute(
+                            "UPDATE background_task SET error_code='write_unknown',last_error='persistent source marker requires verification' WHERE operation_key=%s AND decision_version=%s",
+                            (transaction["source_marker"], transaction["decision_version"]),
                         )
                 continue
             duplicates = [
@@ -288,66 +278,102 @@ def classify_pending(
                 and c.get("type") == payload["type"]
                 and datetime.fromtimestamp(c.get("time", 0), ZoneInfo(settings.timezone)).date()
                 == datetime.fromtimestamp(payload["time"], ZoneInfo(settings.timezone)).date()
-                and transaction["facts"]["merchant_raw"] in c.get("comment", "")
-                and not (
-                    "ebki-" in c.get("comment", "")
-                    and transaction["marker"] not in c.get("comment", "")
-                )
+                and source_row(transaction)["merchant_raw"] in c.get("comment", "")
             ]
             with store.transaction():
                 current = store.one(
-                    "SELECT * FROM transactions WHERE id=%s FOR UPDATE", (transaction["id"],)
+                    "SELECT * FROM bank_transactions WHERE id=%s FOR UPDATE", (transaction["id"],)
                 )
                 if not current:
                     raise ImporterError("transaction disappeared")
-                if current["version"] != transaction["version"] or current["state"] != "pending":
+                if (
+                    current["decision_version"] != transaction["decision_version"]
+                    or current["import_status"] != "pending"
+                ):
                     continue
+                # A marker in remote text is not proof of another local source.
+                # Read confirmed links inside the decision transaction so an unknown
+                # or old marker cannot bypass duplicate review after an empty rebuild.
+                if duplicates:
+                    linked_ids = {
+                        row["ledger_transaction_id"]
+                        for row in store.all(
+                            """SELECT ledger_transaction_id FROM bank_transactions
+                            WHERE id<>%s AND ledger_transaction_id IN
+                            (SELECT value FROM jsonb_array_elements_text(%s))""",
+                            (transaction["id"], [str(c["id"]) for c in duplicates]),
+                        )
+                    }
+                    duplicates = [c for c in duplicates if str(c["id"]) not in linked_ids]
                 store.execute(
-                    "UPDATE transactions SET decision=%s WHERE id=%s", (decision, transaction["id"])
+                    "UPDATE bank_transactions SET import_decision=%s WHERE id=%s",
+                    (import_decision, transaction["id"]),
                 )
-                if duplicates and not (current.get("decision") or {}).get("allow_new"):
+                if duplicates and not (current.get("import_decision") or {}).get("allow_new"):
                     store.execute(
-                        "UPDATE transactions SET state='issue' WHERE id=%s", (transaction["id"],)
+                        "UPDATE bank_transactions SET import_status='issue' WHERE id=%s",
+                        (transaction["id"],),
                     )
-                    store.issue(
-                        "duplicate_candidates",
-                        transaction["id"],
-                        {
-                            "version": transaction["version"],
-                            "candidate_ids": [str(c["id"]) for c in duplicates],
-                        },
+                    store.execute(
+                        "UPDATE bank_transactions SET import_error=%s WHERE id=%s AND decision_version=%s",
+                        (
+                            {
+                                "code": "duplicate_candidates",
+                                "detail": {
+                                    "decision_version": transaction["decision_version"],
+                                    "candidate_ids": [str(c["id"]) for c in duplicates],
+                                },
+                                "decision_version": transaction["decision_version"],
+                            },
+                            transaction["id"],
+                            transaction["decision_version"],
+                        ),
                     )
                     continue
                 store.execute(
-                    """INSERT INTO jobs(transaction_id,kind,version,operation_key,payload)
+                    """INSERT INTO background_task(bank_transaction_id,task_type,decision_version,operation_key,payload)
                     VALUES (%s,'create',%s,%s,%s) ON CONFLICT(operation_key) DO UPDATE SET
-                    version=excluded.version,payload=excluded.payload,status='queued',error=NULL
-                    WHERE jobs.status IN ('cancelled','rejected')""",
-                    (transaction["id"], transaction["version"], transaction["marker"], payload),
+                    decision_version=excluded.decision_version,payload=excluded.payload,status='queued',last_error=NULL,error_code=NULL
+                    WHERE background_task.status IN ('cancelled','rejected')""",
+                    (
+                        transaction["id"],
+                        transaction["decision_version"],
+                        transaction["source_marker"],
+                        payload,
+                    ),
                 )
                 store.execute(
-                    "UPDATE transactions SET state='queued' WHERE id=%s", (transaction["id"],)
+                    "UPDATE bank_transactions SET import_status='queued',import_error=NULL WHERE id=%s",
+                    (transaction["id"],),
                 )
-                store.audit("classification_decided", transaction["id"], decision)
         except Exception as exc:
             with store.transaction():
                 store.execute(
-                    "UPDATE transactions SET state='issue' WHERE id=%s AND version=%s AND state='pending'",
-                    (transaction["id"], transaction["version"]),
+                    "UPDATE bank_transactions SET import_status='issue' WHERE id=%s AND decision_version=%s AND import_status='pending'",
+                    (transaction["id"], transaction["decision_version"]),
                 )
-                store.issue(
-                    exc.code if isinstance(exc, AccountMatchError) else "classification_failed",
-                    transaction["id"],
-                    {
-                        "version": transaction["version"],
-                        **(
-                            {"candidate_ids": exc.candidate_ids}
+                store.execute(
+                    "UPDATE bank_transactions SET import_error=%s WHERE id=%s AND decision_version=%s",
+                    (
+                        {
+                            "code": exc.code
                             if isinstance(exc, AccountMatchError)
-                            else {}
-                        ),
-                        "error_type": type(exc).__name__,
-                        "reason": str(exc)
-                        if isinstance(exc, ImporterError)
-                        else "external dependency failed",
-                    },
+                            else "classification_failed",
+                            "detail": {
+                                "decision_version": transaction["decision_version"],
+                                **(
+                                    {"candidate_ids": exc.candidate_ids}
+                                    if isinstance(exc, AccountMatchError)
+                                    else {}
+                                ),
+                                "error_type": type(exc).__name__,
+                                "reason": str(exc)
+                                if isinstance(exc, ImporterError)
+                                else "external dependency failed",
+                            },
+                            "decision_version": transaction["decision_version"],
+                        },
+                        transaction["id"],
+                        transaction["decision_version"],
+                    ),
                 )

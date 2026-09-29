@@ -13,8 +13,8 @@ COPY pyproject.toml uv.lock ./
 COPY src ./src
 COPY migrations ./migrations
 RUN uv sync --frozen --no-dev --no-editable \
-    && mkdir -p /app/var/evidence /app/var/reports /app/var/logs \
-    && chown -R 10001:10001 /app/var
+    && mkdir -p /app/data/email /app/data/reports /app/data/logs \
+    && chown -R 10001:10001 /app/data
 USER 10001:10001
 ENTRYPOINT ["ebki", "--config", "/app/config.toml"]
 CMD ["worker"]

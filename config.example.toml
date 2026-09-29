@@ -1,31 +1,21 @@
-# 复制为 config.toml，按现有账本和历史账户情况逐项填写。
+# 配置文件
 # 本文件只保存业务规则；服务连接和运行参数见 .env.example。
 # 本地启动使用 uv run --env-file .env ebki --config config.toml ...。
-# 旧版连接/目录/日志字段写在这里会明确报错并提示对应环境变量。
 
-# 必须明确确认银行日报显示时间的时区；此处展示已规划的上海时区。
+# 时区
 timezone = "Asia/Shanghai"
-# 仅日期还款通知的记账时间尚需用户确认；确认后取消注释并填写。
-# 这是记账约定，不能描述为银行真实扣款时刻。
-# date_only_time = "12:00:00"
+# 没有明确记账时间，采用的默认时间（日期还款通知）
+date_only_time = "12:00:00"
 
-# 先完成来源、映射、历史余额与跨渠道边界核对，再显式启用写入。
-writes_enabled = false
-historical_boundary_reviewed = false
-refund_ownership_confirmed = false
+# worker 自动写入通过校验与查重的交易，退款按负支出处理。
 repayment_ownership_confirmed = false
 
-# 手工接纳适用于本地导入和认证不足的历史邮件。
-source_policy = "manual_acceptance"
-# 若选用 qq_authentication_results，须先确认生产 QQ 接收链与可信认证头。
-# source_policy = "qq_authentication_results"
-# trusted_authserv_id = "mx.qq.com"
-# 认证服务固定 mx.qq.com；顶层 Received 收件主机独立校验 qq.com 域边界。
-
-# 若明确只使用规则分类，可改成 rules_only；AI缺少配置不会冒充有效unmatched。
+# 分类规则：ai\rules_only
 classification_mode = "ai"
 
 [mail]
+# 首次全量扫描；后续 UID 增量，并在跨日时回扫最近 N 天；0 禁用回扫。
+rescan_days = 7
 # 同一逻辑邮箱保持 source_id 稳定，避免破坏采集位置身份。
 source_id = "qq-primary"
 

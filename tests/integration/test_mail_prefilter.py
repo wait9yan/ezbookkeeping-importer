@@ -1,5 +1,6 @@
 """合成邮件与隔离 PostgreSQL 验证邮件头预筛选、持久进度及重试。"""
 
+from ezbookkeeping_importer.application.maintenance import status, issues
 from email.message import EmailMessage
 
 from ezbookkeeping_importer.adapters.evidence_store import EvidenceStore
@@ -36,10 +37,10 @@ class HeaderMail(test_pipeline.Mail):
 
     def fetch_headers(self, folder, uid):
         self.headers.append((folder, uid))
-        validity = self.data[folder][0]
+        uid_validity = self.data[folder][0]
         assert self.observer.one(
-            "SELECT id FROM downloads WHERE folder=%s AND validity=%s AND uid=%s",
-            (folder, validity, uid),
+            "SELECT id FROM email_source_item WHERE folder=%s AND uid_validity=%s AND uid=%s",
+            (folder, uid_validity, uid),
         )
         if (folder, uid) in self.header_failures:
             raise TimeoutError("synthetic header failure")
@@ -65,10 +66,13 @@ def test_nonbank_mail_skips_full_body_but_persists_ignored_cursor(database, tmp_
     collect(store, mail, evidence, settings)
     assert mail.headers == [("INBOX", 1), ("INBOX", 2), ("INBOX", 3)]
     assert mail.fetches == [("INBOX", 2), ("INBOX", 3)]
-    assert store.one("SELECT status FROM downloads WHERE uid=1")["status"] == "ignored"
-    assert store.one("SELECT count(*) AS n FROM messages")["n"] == 2
-    cursor = store.one("SELECT * FROM cursors")
-    assert cursor["scanned_uid"] == 3 and cursor["historical_complete"]
+    assert store.one("SELECT status FROM email_source_item WHERE uid=1")["status"] == "skipped"
+    assert store.one("SELECT count(*) AS n FROM email")["n"] == 2
+    cursor = store.one("SELECT * FROM email_sync_checkpoint")
+    assert (
+        cursor["registered_uid"] == 3
+        and status(store)["email_sync_checkpoint"][0]["historical_complete"]
+    )
     collect(store, mail, evidence, settings)
     assert len(mail.headers) == 3 and len(mail.fetches) == 2
 
@@ -91,19 +95,21 @@ def test_header_and_body_failures_retry_after_cursor_advances(database, tmp_path
     mail.failures.add(("INBOX", 2))
     evidence = EvidenceStore(tmp_path / "evidence")
     collect(store, mail, evidence, settings)
-    assert store.one("SELECT count(*) AS n FROM downloads WHERE status='failed'")["n"] == 2
-    assert store.one("SELECT scanned_uid FROM cursors")["scanned_uid"] == 2
-    assert not store.one("SELECT historical_complete FROM cursors")["historical_complete"]
+    assert store.one("SELECT count(*) AS n FROM email_source_item WHERE status='failed'")["n"] == 2
+    assert store.one("SELECT registered_uid FROM email_sync_checkpoint")["registered_uid"] == 2
+    assert not status(store)["email_sync_checkpoint"][0]["historical_complete"]
     assert mail.fetches == [("INBOX", 2)]
     mail.header_failures.clear()
     mail.failures.clear()
     store.close()
     restarted = database.connect()
     collect(restarted, mail, evidence, settings)
-    assert restarted.one("SELECT status FROM downloads WHERE uid=1")["status"] == "ignored"
-    assert restarted.one("SELECT status FROM downloads WHERE uid=2")["status"] == "done"
-    assert restarted.one("SELECT count(*) AS n FROM issues WHERE NOT resolved")["n"] == 0
-    assert restarted.one("SELECT historical_complete FROM cursors")["historical_complete"]
+    assert restarted.one("SELECT status FROM email_source_item WHERE uid=1")["status"] == "skipped"
+    assert (
+        restarted.one("SELECT status FROM email_source_item WHERE uid=2")["status"] == "collected"
+    )
+    assert not [i for i in issues(restarted) if i["code"] == "download_failed"]
+    assert status(restarted)["email_sync_checkpoint"][0]["historical_complete"]
     assert mail.headers == [("INBOX", 1), ("INBOX", 2)] * 2
 
 
@@ -126,5 +132,11 @@ def test_ignored_uid_is_rechecked_when_uidvalidity_changes(database, tmp_path, s
     collect(store, mail, evidence, settings)
     assert mail.headers == [("INBOX", 4)] * 2
     assert mail.fetches == [("INBOX", 4)]
-    assert store.one("SELECT status FROM downloads WHERE validity='old'")["status"] == "ignored"
-    assert store.one("SELECT status FROM downloads WHERE validity='new'")["status"] == "done"
+    assert (
+        store.one("SELECT status FROM email_source_item WHERE uid_validity='old'")["status"]
+        == "skipped"
+    )
+    assert (
+        store.one("SELECT status FROM email_source_item WHERE uid_validity='new'")["status"]
+        == "collected"
+    )

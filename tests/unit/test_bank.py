@@ -163,10 +163,9 @@ def test_forward_prefix_is_normalized_but_original_subject_preserved():
     assert parsed.metadata["subject"] == "Fwd: 转发：每日信用管家"
     assert parsed.metadata["forwarded"] is True
     settings = SimpleNamespace(
-        source_policy="qq_authentication_results", trusted_authserv_id="mx.qq.com"
+        mail=SimpleNamespace(host="imap.qq.com")
     )
     assert source_status(raw, settings, "imap")[0] == "requires_acceptance"
-
 
 def test_explicit_full_card_field_is_preserved_for_exact_account_matching():
     from email.message import EmailMessage

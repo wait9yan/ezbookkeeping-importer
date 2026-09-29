@@ -1,5 +1,6 @@
 """Synthetic files and process environments; never read developer credentials."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +36,27 @@ def environment(monkeypatch, values=ENV):
         monkeypatch.setenv(variable, value)
 
 
-@pytest.mark.parametrize("command", ["migrate", "status", "issues", "sync", "import-eml"])
+def test_runtime_directories_default_to_data_and_allow_environment_override(config, monkeypatch):
+    environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
+    defaults = load_settings(str(config), command="status")
+    assert (defaults.evidence_dir, defaults.report_dir, defaults.log_dir) == (
+        Path("data/email"),
+        Path("data/reports"),
+        Path("data/logs"),
+    )
+    directories = {
+        "EBKI_EVIDENCE_DIR": "/custom/email",
+        "EBKI_REPORT_DIR": "/custom/reports",
+        "EBKI_LOG_DIR": "/custom/logs",
+    }
+    environment(monkeypatch, directories)
+    settings = load_settings(str(config), command="status")
+    assert (settings.evidence_dir, settings.report_dir, settings.log_dir) == tuple(
+        Path(value) for value in directories.values()
+    )
+
+
+@pytest.mark.parametrize("command", ["migrate", "status", "issues", "sync"])
 def test_local_commands_only_require_database_connection(config, monkeypatch, command):
     environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
     settings = load_settings(str(config), command=command)
@@ -231,7 +252,6 @@ def constructors(monkeypatch):
         ("status", None, None, {"PostgresStore"}),
         ("issues", None, None, {"PostgresStore"}),
         ("sync", None, None, {"PostgresStore"}),
-        ("import-eml", None, None, {"PostgresStore", "EvidenceStore"}),
         ("resolve", "ignore", None, {"PostgresStore"}),
         ("resolve", "link", None, {"PostgresStore", "EzBookkeepingClient"}),
         ("resolve", "retry", "123", {"PostgresStore", "EzBookkeepingClient"}),
@@ -365,37 +385,11 @@ def test_doctor_reports_unchecked_mail_and_ai_connections(config, monkeypatch, c
     assert state["closed"] is True
 
 
-def test_import_eml_constructs_only_its_evidence_directory(config, monkeypatch, tmp_path):
-    environment(
-        monkeypatch,
-        {
-            "EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"],
-            "EBKI_EVIDENCE_DIR": str(tmp_path / "new-evidence"),
-            "EBKI_REPORT_DIR": str(tmp_path / "new-reports"),
-            "EBKI_LOG_DIR": str(tmp_path / "new-logs"),
-        },
-    )
-    monkeypatch.setattr(bootstrap, "PostgresStore", lambda _: Resource())
-    runtime = bootstrap.Runtime(
-        load_settings(str(config), command="import-eml"), command="import-eml"
-    )
-    assert (tmp_path / "new-evidence").is_dir()
-    assert not (tmp_path / "new-reports").exists() and not (tmp_path / "new-logs").exists()
-    runtime.close()
-
-
 @pytest.mark.parametrize(
     "replacement,field,reason",
     [
         ('timezone = "SECRET_TIMEZONE"', "timezone", "Asia/Shanghai"),
         ('classification_mode = "SECRET_MODE"', "classification_mode", "ai or rules_only"),
-        (
-            'source_policy = "SECRET_POLICY"',
-            "source_policy",
-            "manual_acceptance or qq_authentication_results",
-        ),
-        ('source_policy = "qq_authentication_results"', "trusted_authserv_id", "required when"),
-        ("writes_enabled = true", "historical_boundary_reviewed", "must be true"),
     ],
 )
 def test_business_validation_has_actionable_safe_reasons(
@@ -437,3 +431,44 @@ def test_runtime_database_creation_is_capability_controlled(
     kwargs = constructors.arguments["PostgresStore"][1]
     assert kwargs == ({"create_database": True} if command == "migrate" else {})
     runtime.close()
+
+
+@pytest.mark.parametrize(
+    "field", ["writes_enabled", "refund_ownership_confirmed", "historical_boundary_reviewed"]
+)
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_removed_write_gates_require_explicit_config_migration(config, monkeypatch, field, value):
+    environment(monkeypatch)
+    config.write_text(f"{field} = {value}\n" + BUSINESS)
+    with pytest.raises(ConfigurationError, match=field + " -> remove"):
+        load_settings(str(config))
+
+
+@pytest.mark.parametrize("value", ["-1", "true", "1.5", '"7"'])
+def test_rescan_days_requires_nonnegative_integer(config, monkeypatch, value):
+    environment(monkeypatch)
+    config.write_text(BUSINESS + f"rescan_days = {value}\n")
+    with pytest.raises(ConfigurationError, match="mail.rescan_days"):
+        load_settings(str(config))
+
+
+@pytest.mark.parametrize("value", [0, 7, 14])
+def test_rescan_days_business_configuration(config, monkeypatch, value):
+    environment(monkeypatch)
+    config.write_text(BUSINESS + f"rescan_days = {value}\n")
+    assert load_settings(str(config)).mail.rescan_days == value
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("source_policy", "manual_acceptance"),
+        ("source_policy", "qq_authentication_results"),
+        ("trusted_authserv_id", "mx.qq.com"),
+    ],
+)
+def test_removed_source_policy_requires_migration(config, monkeypatch, field, value):
+    environment(monkeypatch)
+    config.write_text(f'{field} = "{value}"\n' + BUSINESS)
+    with pytest.raises(ConfigurationError, match=field + " -> remove"):
+        load_settings(str(config))

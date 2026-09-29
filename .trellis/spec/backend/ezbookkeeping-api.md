@@ -14,7 +14,7 @@
 | `GET /api/v1/transactions/list.json` | `count<=50`，`min_time/max_time` 为内部毫秒序列，按 `nextTimeSequenceId` 继续查询，不能仅查第一页。 |
 | `GET /api/v1/transactions/list/all.json` | `start_time/end_time` 为 Unix 秒，响应为完整数组，不能套用分页包装。 |
 | `POST /api/v1/transactions/add.json` | 单笔创建，`sourceAmount` 为整数分，ID 字段为字符串。 |
-| `POST /api/v1/transactions/modify.json` | 完整修改请求；本应用仅用于历史已跟踪人民币暂估的结算金额修正。 |
+| `POST /api/v1/transactions/modify.json` | 完整修改请求；用于同账户金额结算及已授权 USD→CNY 同 ID 账户/金额迁移。 |
 
 全部请求携带 Bearer Token、`X-Timezone-Name: Asia/Shanghai` 和 `X-Timezone-Offset: 480`。Token 由环境或秘密挂载传入，不写入配置示例或日志。
 
@@ -26,9 +26,9 @@
 - 账户决定币种；按账户描述卡号及原币唯一匹配，新 USD 消费记入 USD 账户。已有 CNY 暂估决定只按冻结的旧契约恢复，不能将 USD 数值写人民币账户或反向混写。
 - 临时分类必须唯一匹配完整路径 `其他杂项 → 待分类`，验证父子可见、二级及支出类型，不自动创建替代分类。
 
-## 历史人民币暂估的完整结算更新
+## 完整结算更新
 
-回读当前交易，保留 `type/categoryId/time/utcOffset/sourceAccountId/destinationAccountId/destinationAmount/hideAmount/tagIds/comment/geoLocation`，将 `pictures[].pictureId` 转换成 `pictureIds`，只修改 `sourceAmount`。不能用首次导入快照覆盖用户后续分类和备注。目标不存在或不再是有效 CNY 支出时明确失败，不重建。
+回读当前交易，保留 `type/categoryId/time/utcOffset/sourceAccountId/destinationAccountId/destinationAmount/hideAmount/tagIds/comment/geoLocation`，将 `pictures[].pictureId` 转换成 `pictureIds`，`settle_amount` 只修改 `sourceAmount`；`settle_currency` 仅按冻结授权同时修改 `sourceAccountId` 与 `sourceAmount`。不能用首次导入快照覆盖用户后续分类和备注。目标不存在、来源标记不符或账户/金额发生未授权变化时明确失败，不重建。USD→CNY 迁移仍保留原 ID，回读确认后才切换本地决定。
 
 正确示例：`payload = ledger.settlement_payload(ledger.get(target_id), actual_cents)`；完整载荷持久化后经统一写入用例发送。错误示例：仅发送 `{id, sourceAmount}`，或遗漏图片读取导致修改时清空图片关联。
 
@@ -52,4 +52,4 @@
 
 本地真实验证记录见当前任务 `research/implementation-api-review.md`；生产邮箱、模型服务和生产账本接通需另有实际证据。
 
-新原币决定的核对及币种校验见 [卡号匹配与原币入账](account-matching.md)；USD 账户不会被月账单人民币结算数值覆盖。
+新原币决定的核对及币种校验见 [卡号匹配与原币入账](account-matching.md)；USD 日报先入 USD 账户；唯一可信 CNY 结算可经 settle_currency 同时修改账户与金额，不能仅把 CNY 数值覆盖进 USD 账户。

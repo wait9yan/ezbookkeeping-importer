@@ -43,20 +43,25 @@ def test_only_selected_pending_record_is_classified_and_default_keeps_original_b
 ):
     store, ledger, ai = database.store, Ledger(), ai_classifier()
     import_daily(store, tmp_path, settings, count=3)
-    pending = store.all("SELECT * FROM transactions ORDER BY id")
+    pending = store.all("SELECT * FROM bank_transactions ORDER BY id")
     chosen = pending[1]
     ai_settings = settings.model_copy(update={"classification_mode": "ai"})
     classify_pending(store, ai_settings, ledger, ai, transaction_ids=frozenset({chosen["id"]}))
     assert ai.classify.call_count == 1 and ai.classify.call_args.args[0] == chosen["id"]
-    states = {row["id"]: row["state"] for row in store.all("SELECT id,state FROM transactions")}
+    states = {
+        row["id"]: row["import_status"]
+        for row in store.all("SELECT id,import_status FROM bank_transactions")
+    }
     assert states[chosen["id"]] == "queued"
     assert all(
-        state == "pending" for identifier, state in states.items() if identifier != chosen["id"]
+        import_status == "pending"
+        for identifier, import_status in states.items()
+        if identifier != chosen["id"]
     )
-    assert store.one("SELECT count(*) AS n FROM jobs")["n"] == 1
+    assert store.one("SELECT count(*) AS n FROM background_task")["n"] == 1
     classify_pending(store, ai_settings, ledger, ai)
     assert ai.classify.call_count == 3
-    assert store.one("SELECT count(*) AS n FROM jobs")["n"] == 3
+    assert store.one("SELECT count(*) AS n FROM background_task")["n"] == 3
 
 
 @pytest.mark.parametrize("scope", [frozenset(), frozenset({"not-found"})])
@@ -65,7 +70,7 @@ def test_empty_or_missing_scope_does_not_change_pending_transactions(
 ):
     store, ledger, ai = database.store, Ledger(), ai_classifier()
     import_daily(store, tmp_path, settings, count=3)
-    before = store.all("SELECT * FROM transactions ORDER BY id")
+    before = store.all("SELECT * FROM bank_transactions ORDER BY id")
     classify_pending(
         store,
         settings.model_copy(update={"classification_mode": "ai"}),
@@ -73,15 +78,15 @@ def test_empty_or_missing_scope_does_not_change_pending_transactions(
         ai,
         transaction_ids=scope,
     )
-    assert store.all("SELECT * FROM transactions ORDER BY id") == before
-    assert store.one("SELECT count(*) AS n FROM jobs")["n"] == 0
+    assert store.all("SELECT * FROM bank_transactions ORDER BY id") == before
+    assert store.one("SELECT count(*) AS n FROM background_task")["n"] == 0
     ai.classify.assert_not_called()
 
 
 def test_failure_within_scope_does_not_classify_other_pending_records(database, tmp_path, settings):
     store, ledger, ai = database.store, Ledger(), ai_classifier()
     import_daily(store, tmp_path, settings, count=3)
-    chosen = store.one("SELECT * FROM transactions ORDER BY id")
+    chosen = store.one("SELECT * FROM bank_transactions ORDER BY id")
     ai.classify.side_effect = ImporterError("synthetic classification failure")
     classify_pending(
         store,
@@ -91,21 +96,33 @@ def test_failure_within_scope_does_not_classify_other_pending_records(database, 
         transaction_ids=frozenset({chosen["id"]}),
     )
     assert ai.classify.call_count == 1
-    states = {row["id"]: row["state"] for row in store.all("SELECT id,state FROM transactions")}
+    states = {
+        row["id"]: row["import_status"]
+        for row in store.all("SELECT id,import_status FROM bank_transactions")
+    }
     assert states[chosen["id"]] == "issue"
     assert all(
-        state == "pending" for identifier, state in states.items() if identifier != chosen["id"]
+        import_status == "pending"
+        for identifier, import_status in states.items()
+        if identifier != chosen["id"]
     )
-    assert store.one("SELECT count(*) AS n FROM issues")["n"] == 1
+    assert (
+        store.one("SELECT count(*) AS n FROM bank_transactions WHERE import_error IS NOT NULL")["n"]
+        == 1
+    )
 
 
-@pytest.mark.parametrize("state", ["unknown", "dispatching", "queued", "booked"])
-def test_scope_does_not_make_nonpending_records_eligible(database, tmp_path, settings, state):
+@pytest.mark.parametrize("import_status", ["unknown", "dispatching", "queued", "booked"])
+def test_scope_does_not_make_nonpending_records_eligible(
+    database, tmp_path, settings, import_status
+):
     store, ledger, ai = database.store, Ledger(), ai_classifier()
     import_daily(store, tmp_path, settings, count=3)
-    chosen = store.one("SELECT * FROM transactions ORDER BY id")
-    store.execute("UPDATE transactions SET state=%s WHERE id=%s", (state, chosen["id"]))
-    before = store.all("SELECT * FROM transactions ORDER BY id")
+    chosen = store.one("SELECT * FROM bank_transactions ORDER BY id")
+    store.execute(
+        "UPDATE bank_transactions SET import_status=%s WHERE id=%s", (import_status, chosen["id"])
+    )
+    before = store.all("SELECT * FROM bank_transactions ORDER BY id")
     classify_pending(
         store,
         settings.model_copy(update={"classification_mode": "ai"}),
@@ -113,5 +130,5 @@ def test_scope_does_not_make_nonpending_records_eligible(database, tmp_path, set
         ai,
         transaction_ids=frozenset({chosen["id"]}),
     )
-    assert store.all("SELECT * FROM transactions ORDER BY id") == before
+    assert store.all("SELECT * FROM bank_transactions ORDER BY id") == before
     ai.classify.assert_not_called()

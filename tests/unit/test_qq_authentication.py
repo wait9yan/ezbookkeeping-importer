@@ -7,7 +7,7 @@ import pytest
 from ezbookkeeping_importer.application.collect import source_status
 
 SETTINGS = SimpleNamespace(
-    source_policy="qq_authentication_results", trusted_authserv_id="mx.qq.com"
+    mail=SimpleNamespace(host="imap.qq.com")
 )
 AUTH = "mx.qq.com; spf=pass smtp.mailfrom=message.cmbchina.com; dkim=pass header.d=message.cmbchina.com; dmarc=pass header.from=message.cmbchina.com"
 
@@ -132,16 +132,21 @@ def test_original_files_do_not_inherit_qq_authentication(origin):
     assert source_status(raw(), SETTINGS, origin)[0] == "requires_acceptance"
 
 
-def test_manual_policy_forwarding_and_unrecognized_authserv_still_need_acceptance():
-    manual = SimpleNamespace(source_policy="manual_acceptance", trusted_authserv_id="mx.qq.com")
-    assert source_status(raw(), manual, "imap")[0] == "requires_acceptance"
-    assert (
-        source_status(raw(subject="Fwd: bank report"), SETTINGS, "imap")[0] == "requires_acceptance"
-    )
-    other = SimpleNamespace(
-        source_policy="qq_authentication_results", trusted_authserv_id="mx.google.com"
-    )
-    assert source_status(raw(), other, "imap")[0] == "requires_acceptance"
+def test_forwarding_still_needs_acceptance():
+    assert source_status(raw(subject="Fwd: bank report"), SETTINGS, "imap")[0] == "requires_acceptance"
+
+
+@pytest.mark.parametrize("host", ["imap.google.com", "imap.qq.com.evil.example", "evilqq.com"])
+def test_unsupported_imap_host_cannot_trust_qq_headers(host):
+    settings = SimpleNamespace(mail=SimpleNamespace(host=host))
+    state, reason = source_status(raw(), settings, "imap")
+    assert state == "requires_acceptance"
+    assert "not implemented" in reason
+
+
+def test_qq_host_selection_is_case_insensitive_and_accepts_dns_root_dot():
+    settings = SimpleNamespace(mail=SimpleNamespace(host="IMAP.QQ.COM."))
+    assert source_status(raw(), settings, "imap")[0] == "verified"
 
 
 def test_untrusted_top_hop_cannot_be_replaced_by_older_trusted_hop():

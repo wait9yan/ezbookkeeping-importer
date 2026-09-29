@@ -12,14 +12,21 @@ from ezbookkeeping_importer.domain.errors import ImporterError
 def transaction():
     return {
         "id": "synthetic-row",
-        "state": "pending",
-        "facts": {
-            "merchant_raw": "合成商户",
-            "event_type": "expense",
-            "original_amount": "10.00",
-            "original_currency": "USD",
-        },
-        "decision": {
+        "import_status": "pending",
+        "merchant_name": "合成商户",
+        "occurred_date": "2026-01-01",
+        "occurred_at": None,
+        "time_precision": "date",
+        "card_reference": "1234",
+        "event_type": "expense",
+        "original_amount": "10.00",
+        "original_currency": "USD",
+        "report_row_key": "row",
+        "posted_date": None,
+        "bank_settlement_amount": None,
+        "bank_settlement_currency": None,
+        "source_details": {},
+        "import_decision": {
             "reclassify_requested": True,
             "rate_snapshot": {"dataSource": "synthetic", "adoptedRate": "7"},
             "classification": {"category_id": "deleted"},
@@ -59,10 +66,13 @@ def test_retry_changes_only_classification_and_preserves_manual_account_and_quot
         rules=[SimpleNamespace(merchant_pattern="合成", category_id="replacement")],
         classification_mode="rules_only",
     )
-    decision = refresh_classification(transaction, settings, ledger, None)
-    assert decision["payload"] == {**original["decision"]["payload"], "categoryId": "replacement"}
-    assert decision["rate_snapshot"] == original["decision"]["rate_snapshot"]
-    assert decision["reclassify_requested"] is False
+    import_decision = refresh_classification(transaction, settings, ledger, None)
+    assert import_decision["payload"] == {
+        **original["import_decision"]["payload"],
+        "categoryId": "replacement",
+    }
+    assert import_decision["rate_snapshot"] == original["import_decision"]["rate_snapshot"]
+    assert import_decision["reclassify_requested"] is False
     assert transaction == original
     ledger.rates.assert_not_called()
 
@@ -77,7 +87,7 @@ def test_retry_rule_conflict_is_explicit(transaction, ledger):
     )
     with pytest.raises(ImporterError, match="conflict"):
         refresh_classification(transaction, settings, ledger, None)
-    assert transaction["decision"]["reclassify_requested"] is True
+    assert transaction["import_decision"]["reclassify_requested"] is True
 
 
 def test_retry_ai_failure_is_not_unmatched(transaction, ledger):
@@ -86,7 +96,7 @@ def test_retry_ai_failure_is_not_unmatched(transaction, ledger):
     ai.classify.side_effect = ImporterError("synthetic AI protocol failure")
     with pytest.raises(ImporterError, match="AI protocol failure"):
         refresh_classification(transaction, settings, ledger, ai)
-    assert transaction["decision"]["payload"]["categoryId"] == "deleted"
+    assert transaction["import_decision"]["payload"]["categoryId"] == "deleted"
 
 
 def test_retry_unmatched_ai_uses_current_fallback(transaction, ledger):
@@ -97,7 +107,7 @@ def test_retry_unmatched_ai_uses_current_fallback(transaction, ledger):
         "category_id": None,
         "reason": "synthetic insufficient information",
     }
-    decision = refresh_classification(transaction, settings, ledger, ai)
-    assert decision["payload"]["categoryId"] == "fallback"
-    assert decision["classification"]["reason"] == "synthetic insufficient information"
-    assert decision["payload"]["sourceAmount"] == 7000
+    import_decision = refresh_classification(transaction, settings, ledger, ai)
+    assert import_decision["payload"]["categoryId"] == "fallback"
+    assert import_decision["classification"]["reason"] == "synthetic insufficient information"
+    assert import_decision["payload"]["sourceAmount"] == 7000

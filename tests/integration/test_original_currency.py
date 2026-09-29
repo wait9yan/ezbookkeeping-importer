@@ -1,183 +1,217 @@
+"""USD 原始事实与 CNY 月结决定各自保持权威。"""
+
 from copy import deepcopy
-from email.message import EmailMessage
-
 import pytest
-
 import test_pipeline as pipeline
-from test_pipeline import Ledger, queue, queue_legacy_estimate, import_daily, statement
 from ezbookkeeping_importer.application.classify import classify_pending
-from ezbookkeeping_importer.application.collect import ingest
-from ezbookkeeping_importer.application.parse import parse_pending
-from ezbookkeeping_importer.application.write import write_queued, verify_unknown
+from ezbookkeeping_importer.application.write import write_queued, recover_dispatching
 from ezbookkeeping_importer.application.resolve import resolve
 from ezbookkeeping_importer.application.reconcile import reconcile
-from ezbookkeeping_importer.adapters.evidence_store import EvidenceStore
-from ezbookkeeping_importer.adapters.banks.cmb import BankParser
+from ezbookkeeping_importer.application.maintenance import issues
 from ezbookkeeping_importer.domain.errors import ImporterError
 
 database = pipeline.database
 settings = pipeline.settings
 
 
-def test_usd_creation_and_monthly_cny_settlement_never_modify_usd_amount(
+def prepared(database, tmp_path, settings):
+    store, ledger = database.store, pipeline.Ledger()
+    tx = pipeline.queue(store, tmp_path, settings, ledger, currency="USD")
+    write_queued(store, ledger)
+    target = store.one("SELECT ledger_transaction_id FROM bank_transactions")[
+        "ledger_transaction_id"
+    ]
+    pipeline.statement(store, tx, "72.00")
+    return store, ledger, tx, target
+
+
+def test_usd_monthly_settlement_changes_account_on_same_id_preserving_current_fields(
     database, tmp_path, settings
 ):
-    store, ledger = database.store, Ledger()
-    tx = queue(store, tmp_path, settings, ledger, currency="USD")
-    assert tx["decision"]["target_currency"] == "USD"
-    assert tx["decision"]["payload"]["sourceAmount"] == 1000
-    write_queued(store, ledger, True)
-    statement(store, tx, "72.00")
-    reconcile(store, ledger, tmp_path / "reports")
-    write_queued(store, ledger, True)
-    result = store.one("SELECT * FROM reconciliation_items")
-    assert result["status"] == "matched"
-    assert result["data"]["bank_settlement"] == {"amount": "72.00", "currency": "CNY"}
-    assert result["data"]["comparison_currency"] == "USD"
-    assert ledger.modify_calls == []
-    assert store.one("SELECT count(*) AS n FROM jobs WHERE kind='settle_amount'")["n"] == 0
-    target = store.one("SELECT target_id FROM transactions")["target_id"]
-    assert ledger.records[target]["sourceAmount"] == 1000
-    ledger.records[target]["time"] += 86400
-    reconcile(store, ledger, tmp_path / "reports")
-    assert store.one("SELECT status FROM reconciliation_items")["status"] == "target_changed"
-
-
-def test_usd_refund_is_negative_usd_expense(database, tmp_path, settings):
-    store, ledger = database.store, Ledger()
-    settings = settings.model_copy(update={"refund_ownership_confirmed": True})
-    message = EmailMessage()
-    message["Subject"] = "每日信用管家"
-    message.set_content(
-        "<p>2026/01/01 您的消费明细如下：</p><b>12:00:00</b><b>USD -10.00</b><b>尾号1234 退货 合成商户</b>",
-        subtype="html",
-    )
-    identifier = ingest(
-        store, EvidenceStore(tmp_path / "evidence"), message.as_bytes(), settings, "eml"
-    )
-    store.execute("UPDATE messages SET accepted=true WHERE id=%s", (identifier,))
-    parse_pending(store, BankParser())
-    classify_pending(store, settings, ledger, None)
-    write_queued(store, ledger, True)
-    assert ledger.create_calls[0]["type"] == 3
+    store, ledger, tx, target = prepared(database, tmp_path, settings)
     assert ledger.create_calls[0]["sourceAccountId"] == "usd-account"
-    assert ledger.create_calls[0]["sourceAmount"] == -1000
-
-
-@pytest.mark.parametrize("ambiguous", [False, True])
-def test_nonunique_account_match_is_a_persisted_issue(
-    database, tmp_path, settings, monkeypatch, ambiguous
-):
-    store, ledger = database.store, Ledger()
-    import_daily(store, tmp_path, settings, currency="USD")
-    accounts = ledger.accounts()
-    accounts = [a for a in accounts if a["currency"] == "USD"] if ambiguous else []
-    if ambiguous:
-        accounts.append({**accounts[0], "id": "second-usd"})
-    monkeypatch.setattr(ledger, "accounts", lambda: accounts)
-    classify_pending(store, settings, ledger, None)
-    issue = store.one("SELECT * FROM issues")
-    assert issue["code"] == ("account_ambiguous" if ambiguous else "account_not_found")
-    assert store.one("SELECT state FROM transactions")["state"] == "issue"
-    assert store.one("SELECT count(*) AS n FROM jobs")["n"] == 0
-
-
-def test_currency_change_before_send_is_rejected(database, tmp_path, settings, monkeypatch):
-    store, ledger = database.store, Ledger()
-    queue(store, tmp_path, settings, ledger, currency="USD")
-    accounts = [{**a, "currency": "CNY"} for a in ledger.accounts()]
-    monkeypatch.setattr(ledger, "accounts", lambda: accounts)
-    write_queued(store, ledger, True)
-    assert ledger.create_calls == []
-    assert store.one("SELECT * FROM issues WHERE code='write_preflight_failed'")
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-def test_manual_account_correction_cannot_change_frozen_currency(
-    database, tmp_path, settings, legacy
-):
-    store, ledger = database.store, Ledger()
-    tx = (
-        queue_legacy_estimate(store, tmp_path, settings, ledger)
-        if legacy
-        else queue(store, tmp_path, settings, ledger, currency="USD")
+    assert ledger.create_calls[0]["sourceAmount"] == 1000
+    ledger.records[target].update(
+        categoryId="edited-category",
+        comment=tx["source_marker"] + " 用户备注",
+        tagIds=["tag"],
+        pictures=[{"pictureId": "picture"}],
+        hideAmount=True,
+        geoLocation={"latitude": 31, "longitude": 121},
     )
-    store.issue("synthetic", tx["id"], {"version": 1})
-    issue = store.one("SELECT * FROM issues WHERE code='synthetic'")
-    with pytest.raises(ImporterError, match="frozen target currency"):
-        resolve(
-            store,
-            ledger,
-            issue["id"],
-            1,
-            "retry",
-            "synthetic",
-            account_id="usd-account" if legacy else "account",
-        )
-    assert store.one("SELECT version FROM transactions")["version"] == 1
+    before = deepcopy(ledger.records[target])
+    reconcile(store, ledger, tmp_path)
+    task = store.one("SELECT * FROM background_task WHERE task_type='settle_currency'")
+    assert task is not None
+    write_queued(store, ledger)
+    assert len(ledger.create_calls) == len(ledger.modify_calls) == 1
+    actual = ledger.records[target]
+    assert actual["sourceAccountId"] == "account" and actual["sourceAmount"] == 7200
+    for key in ("id", "categoryId", "comment", "tagIds", "time", "hideAmount", "geoLocation"):
+        assert actual[key] == before[key]
+    assert ledger.modify_calls[0]["pictureIds"] == ["picture"]
+    updated = store.one("SELECT * FROM bank_transactions")
+    assert updated["original_currency"] == "USD" and updated["original_amount"] == 10
+    assert updated["source_marker"] == tx["source_marker"]
+    assert updated["ledger_transaction_id"] == target
+    assert updated["import_decision"]["target_currency"] == "CNY"
+    assert updated["import_decision"]["account_match"]["account_id"] == "account"
+    assert updated["import_decision"]["account_match"]["currency"] == "CNY"
+    assert updated["settlement_adjustment"] is not None
+    reconcile(store, ledger, tmp_path)
+    write_queued(store, ledger)
+    assert len(ledger.modify_calls) == 1
 
 
-def test_unknown_recovery_and_link_verify_underlying_account_currency(
+def test_settlement_lost_response_recovers_without_resend(
     database, tmp_path, settings, monkeypatch
 ):
-    store, ledger = database.store, Ledger()
-    tx = queue(store, tmp_path, settings, ledger, currency="USD")
-    job = store.one("SELECT * FROM jobs")
-    ledger.records["existing"] = {"id": "existing", **deepcopy(job["payload"])}
-    monkeypatch.setattr(
-        ledger, "accounts", lambda: [{"id": "usd-account", "type": 1, "currency": "CNY"}]
+    store, ledger, tx, target = prepared(database, tmp_path, settings)
+    reconcile(store, ledger, tmp_path)
+    modify = ledger.modify
+
+    def timeout(payload):
+        modify(payload)
+        raise TimeoutError("synthetic response lost")
+
+    monkeypatch.setattr(ledger, "modify", timeout)
+    write_queued(store, ledger)
+    store.close()
+    restarted = database.connect()
+    recover_dispatching(restarted)
+    write_queued(restarted, ledger)
+    assert len(ledger.modify_calls) == 1 and len(ledger.create_calls) == 1
+    assert (
+        restarted.one("SELECT status FROM background_task WHERE task_type='settle_currency'")[
+            "status"
+        ]
+        == "done"
     )
-    store.issue("synthetic", tx["id"], {"version": 1})
-    issue = store.one("SELECT * FROM issues WHERE code='synthetic'")
-    with pytest.raises(ImporterError, match="frozen target currency"):
-        resolve(store, ledger, issue["id"], 1, "link", "synthetic", target_id="existing")
-    store.execute("UPDATE jobs SET status='unknown',target_id='existing'")
-    store.execute("UPDATE transactions SET state='unknown'")
-    verify_unknown(store, ledger)
-    assert store.one("SELECT state FROM transactions")["state"] == "unknown"
-    assert ledger.create_calls == []
+    assert ledger.records[target]["sourceAmount"] == 7200
 
 
-def test_new_original_currency_cannot_execute_legacy_settlement_task(database, tmp_path, settings):
-    store, ledger = database.store, Ledger()
-    tx = queue(store, tmp_path, settings, ledger, currency="USD")
-    write_queued(store, ledger, True)
-    target = store.one("SELECT target_id FROM transactions")["target_id"]
-    store.execute(
-        "INSERT INTO jobs(transaction_id,kind,version,operation_key,payload,target_id) VALUES (%s,'settle_amount',1,'synthetic-invalid-settle',%s,%s)",
-        (tx["id"], {"type": 3, "sourceAccountId": "usd-account", "sourceAmount": 7200}, target),
+def test_already_applied_settlement_has_no_write_attempt(database, tmp_path, settings):
+    store, ledger, tx, target = prepared(database, tmp_path, settings)
+    reconcile(store, ledger, tmp_path)
+    ledger.records[target].update(sourceAccountId="account", sourceAmount=7200)
+    write_queued(store, ledger)
+    task = store.one("SELECT * FROM background_task WHERE task_type='settle_currency'")
+    assert task["status"] == "done" and task["completion_method"] == "already_applied"
+    assert (
+        store.one("SELECT count(*) AS n FROM ledger_write_attempt WHERE task_id=%s", (task["id"],))[
+            "n"
+        ]
+        == 0
     )
-    store.execute("UPDATE transactions SET state='queued'")
-    write_queued(store, ledger, True)
     assert ledger.modify_calls == []
-    assert ledger.records[target]["sourceAmount"] == 1000
 
 
-def test_monthly_unknown_currency_keeps_same_card_cny_usd_candidates_ambiguous(
-    database, tmp_path, settings
+def test_missing_settlement_target_never_recreates(database, tmp_path, settings):
+    store, ledger, tx, target = prepared(database, tmp_path, settings)
+    reconcile(store, ledger, tmp_path)
+    del ledger.records[target]
+    write_queued(store, ledger)
+    assert len(ledger.create_calls) == 1 and ledger.modify_calls == []
+    assert any(i["entity_type"] == "background_task" for i in issues(store))
+
+
+@pytest.mark.parametrize("account_case", ["absent", "hidden", "ambiguous"])
+def test_cny_account_must_be_unique_visible_before_settlement(
+    database, tmp_path, settings, monkeypatch, account_case
 ):
-    store, ledger = database.store, Ledger()
-    import_daily(store, tmp_path, settings, currency="USD")
-    tx = store.one("SELECT * FROM transactions")
-    # Two independent source facts with the same card/date/merchant/amount but different currencies.
-    second_facts = {**tx["facts"], "original_currency": "CNY"}
-    store.execute(
-        "INSERT INTO transactions(id,report_key,row_key,facts,marker) VALUES ('second',%s,'second',%s,'ebki-second')",
-        (tx["report_key"], second_facts),
+    store, ledger, tx, target = prepared(database, tmp_path, settings)
+    accounts = ledger.accounts()
+    if account_case == "absent":
+        accounts = accounts[1:]
+    elif account_case == "hidden":
+        accounts[0]["hidden"] = True
+    else:
+        accounts.append({**accounts[0], "id": "second-cny"})
+    monkeypatch.setattr(ledger, "accounts", lambda: accounts)
+    reconcile(store, ledger, tmp_path)
+    write_queued(store, ledger)
+    assert ledger.modify_calls == [] and ledger.records[target]["sourceAccountId"] == "usd-account"
+    assert issues(store)
+
+
+def test_account_failure_is_current_transaction_diagnostic(
+    database, tmp_path, settings, monkeypatch
+):
+    store, ledger = database.store, pipeline.Ledger()
+    pipeline.import_daily(store, tmp_path, settings, currency="USD")
+    monkeypatch.setattr(ledger, "accounts", lambda: [])
+    classify_pending(store, settings, ledger, None)
+    problem = next(i for i in issues(store) if i["entity_type"] == "bank_transactions")
+    assert problem["code"] == "account_not_found"
+    assert store.one("SELECT count(*) AS n FROM background_task")["n"] == 0
+
+
+def test_manual_retry_cannot_change_frozen_currency(database, tmp_path, settings):
+    store, ledger = database.store, pipeline.Ledger()
+    tx = pipeline.queue(store, tmp_path, settings, ledger, currency="USD")
+    with pytest.raises(ImporterError, match="frozen target currency"):
+        resolve(
+            store, ledger, "bank_transactions", tx["id"], 1, "retry", "核实", account_id="account"
+        )
+    assert store.one("SELECT decision_version FROM bank_transactions")["decision_version"] == 1
+
+
+def test_cny_difference_is_diagnostic_not_automatic_repricing(database, tmp_path, settings):
+    store, ledger = database.store, pipeline.Ledger()
+    tx = pipeline.queue(store, tmp_path, settings, ledger)
+    write_queued(store, ledger)
+    pipeline.statement(store, tx, "11.00")
+    reconcile(store, ledger, tmp_path)
+    write_queued(store, ledger)
+    result = store.one(
+        "SELECT * FROM bank_statement_reconciliation WHERE check_direction='statement_to_transaction'"
     )
-    statement(store, tx, "72.00")
-    reconcile(store, ledger, tmp_path / "reports")
-    assert store.one("SELECT status FROM reconciliation_items")["status"] == "ambiguous"
-
-
-def test_cny_settlement_difference_is_reported_without_overwriting(database, tmp_path, settings):
-    store, ledger = database.store, Ledger()
-    tx = queue(store, tmp_path, settings, ledger)
-    write_queued(store, ledger, True)
-    statement(store, tx, "11.00")
-    reconcile(store, ledger, tmp_path / "reports")
-    write_queued(store, ledger, True)
-    item = store.one("SELECT * FROM reconciliation_items")
-    assert item["status"] == "target_changed" and item["data"]["comparison_amount"] == 1100
+    assert result["ledger_check_status"] == "mismatched" and result["expected_amount"] == 11
     assert ledger.modify_calls == []
-    assert ledger.create_calls[0]["sourceAmount"] == 1000
+
+
+@pytest.mark.parametrize("changed", [{"sourceAmount": 999}, {"sourceAccountId": "other-account"}])
+def test_remote_settlement_amount_or_account_change_is_not_overwritten(
+    database, tmp_path, settings, changed
+):
+    store, ledger, tx, target = prepared(database, tmp_path, settings)
+    reconcile(store, ledger, tmp_path)
+    ledger.records[target].update(changed)
+    write_queued(store, ledger)
+    assert ledger.modify_calls == []
+    task = store.one("SELECT * FROM background_task WHERE task_type='settle_currency'")
+    assert task["error_code"] == "write_preflight_failed"
+    assert store.one("SELECT import_decision FROM bank_transactions")["import_decision"][
+        "target_currency"
+    ] == "USD"
+
+
+def test_rejected_currency_settlement_retries_same_identity_and_frozen_target(
+    database, tmp_path, settings, monkeypatch
+):
+    from ezbookkeeping_importer.domain.errors import LedgerRejected
+
+    store, ledger, tx, target = prepared(database, tmp_path, settings)
+    reconcile(store, ledger, tmp_path)
+    original_modify = ledger.modify
+
+    def reject(payload):
+        raise LedgerRejected("synthetic rejection")
+
+    monkeypatch.setattr(ledger, "modify", reject)
+    write_queued(store, ledger)
+    task = store.one("SELECT * FROM background_task WHERE task_type='settle_currency'")
+    assert task["status"] == "rejected"
+    assert store.one("SELECT import_status FROM bank_transactions")["import_status"] == "booked"
+    resolve(store, ledger, "background_task", str(task["id"]), task["decision_version"],
+            "retry", "修复拒绝原因后核实重试")
+    monkeypatch.setattr(ledger, "modify", original_modify)
+    write_queued(store, ledger)
+    retried = store.one("SELECT * FROM background_task WHERE task_type='settle_currency'")
+    assert retried["id"] == task["id"] and retried["operation_key"] == task["operation_key"]
+    assert retried["status"] == "done" and retried["ledger_transaction_id"] == target
+    assert retried["payload"]["request"]["sourceAmount"] == 7200
+    attempts = store.all("SELECT * FROM ledger_write_attempt WHERE task_id=%s ORDER BY id", (task["id"],))
+    assert [a["outcome"] for a in attempts] == ["rejected", "confirmed"]
+    assert [a["decision_version"] for a in attempts] == [1, 2]
+    assert len(ledger.create_calls) == 1 and len(ledger.modify_calls) == 1

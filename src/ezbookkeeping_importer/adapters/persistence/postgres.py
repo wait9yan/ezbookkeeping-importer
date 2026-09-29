@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from pathlib import Path
 import re
+import uuid
 from typing import Any
 
 import psycopg
@@ -8,7 +9,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.conninfo import conninfo_to_dict
 
-from ...domain.errors import DatabaseDiagnosticError
+from ...domain.errors import DatabaseDiagnosticError, ImporterError
 from psycopg.types.json import Jsonb
 
 SCHEMA = Path(__file__).with_name("schema.sql")
@@ -185,13 +186,83 @@ class PostgresStore:
         try:
             with self.transaction():
                 self.execute("SELECT pg_advisory_xact_lock(780416)")
+                tables = {
+                    row["tablename"]
+                    for row in self.all(
+                        "SELECT tablename FROM pg_tables WHERE schemaname=current_schema()"
+                    )
+                }
+                expected = set(re.findall(r"CREATE TABLE (\w+)", SCHEMA.read_text()))
+                if tables:
+                    if tables != expected:
+                        raise ImporterError(
+                            "schema is old or incomplete; initialize an empty schema"
+                        )
+                    if self.all("SELECT version FROM schema_version") != [{"version": 1}]:
+                        raise ImporterError("unsupported schema version")
+                    self._validate_schema()
+                    return
                 self.execute(SCHEMA.read_text())
         except (psycopg.OperationalError, psycopg.errors.InsufficientPrivilege) as exc:
             raise database_diagnostic(exc, "migrate") from None
 
+    def _schema_signature(self, namespace: str) -> dict:
+        relations = self.all(
+            """SELECT c.relname,a.attname,format_type(a.atttypid,a.atttypmod) AS type,
+            a.attnotnull,a.attgenerated,pg_get_expr(d.adbin,d.adrelid) AS default_expression,
+            obj_description(c.oid) AS table_comment,col_description(c.oid,a.attnum) AS column_comment
+            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
+            LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
+            WHERE n.nspname=%s AND c.relkind='r' ORDER BY c.relname,a.attnum""",
+            (namespace,),
+        )
+        constraints = self.all(
+            """SELECT c.relname,k.contype,pg_get_constraintdef(k.oid) AS definition
+            FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid
+            JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s
+            ORDER BY c.relname,k.contype,pg_get_constraintdef(k.oid)""",
+            (namespace,),
+        )
+        indexes = self.all(
+            """SELECT tablename,indexname,indexdef FROM pg_indexes
+            WHERE schemaname=%s ORDER BY tablename,indexname""",
+            (namespace,),
+        )
+        # PostgreSQL renders schema qualifiers depending on search_path. Normalize
+        # only the trusted namespace, preserving all actual types and constraints.
+        import json
+
+        value = json.dumps(
+            {"columns": relations, "constraints": constraints, "indexes": indexes}, sort_keys=True
+        )
+        return json.loads(
+            value.replace(namespace + ".", "").replace('\\"' + namespace + '\\".', "")
+        )
+
+    def _validate_schema(self):
+        original = self.one(
+            "SELECT current_schema() AS namespace, current_setting('search_path') AS path"
+        )
+        actual = self._schema_signature(original["namespace"])
+        temporary = "ebki_contract_" + uuid.uuid4().hex
+        self.connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(temporary)))
+        self.one("SELECT set_config('search_path',%s,true)", (temporary,))
+        self.execute(SCHEMA.read_text())
+        expected = self._schema_signature(temporary)
+        self.one("SELECT set_config('search_path',%s,true)", (original["path"],))
+        self.connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(temporary)))
+        if actual != expected:
+            raise ImporterError(
+                "schema contract differs from authoritative initialization; use an empty schema"
+            )
+
     @contextmanager
     def transaction(self):
         with self.connection.transaction():
+            # Every short mutation transaction takes this before row locks. Network calls
+            # live outside these transactions; reconciliation publication uses the same order.
+            self.execute("SELECT pg_advisory_xact_lock(780418)")
             yield self
 
     def execute(self, sql: str, params: tuple = ()):
@@ -205,20 +276,6 @@ class PostgresStore:
 
     def all(self, sql: str, params: tuple = ()):
         return self.execute(sql, params).fetchall()
-
-    def audit(self, event: str, entity_id: str, data: dict):
-        self.execute(
-            "INSERT INTO audit_events(event,entity_id,data) VALUES (%s,%s,%s)",
-            (event, entity_id, Jsonb(data)),
-        )
-
-    def issue(self, code: str, entity_id: str, data: dict):
-        self.execute(
-            """INSERT INTO issues(code,entity_id,data) VALUES (%s,%s,%s)
-            ON CONFLICT(code,entity_id) DO UPDATE SET data=excluded.data, resolved=false,
-            updated_at=now()""",
-            (code, entity_id, Jsonb(data)),
-        )
 
     def is_connection_usable(self) -> bool:
         return not self.connection.closed and not self.connection.broken

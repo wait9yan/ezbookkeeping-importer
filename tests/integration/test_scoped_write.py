@@ -16,17 +16,17 @@ settings = pipeline.settings
 def queued_transactions(store, tmp_path, settings, ledger):
     import_daily(store, tmp_path, settings, count=3)
     classify_pending(store, settings, ledger, None)
-    transactions = store.all("SELECT * FROM transactions ORDER BY id")
-    assert len(transactions) == 3
-    assert all(row["state"] == "queued" for row in transactions)
-    return transactions
+    bank_transactions = store.all("SELECT * FROM bank_transactions ORDER BY id")
+    assert len(bank_transactions) == 3
+    assert all(row["import_status"] == "queued" for row in bank_transactions)
+    return bank_transactions
 
 
 def test_scope_ids_are_bound_parameters_not_sql_text():
     store, ledger = Mock(), Mock()
     store.all.return_value = []
     identifier = "synthetic-id') OR TRUE --"
-    write_queued(store, ledger, True, transaction_ids=frozenset({identifier}))
+    write_queued(store, ledger, transaction_ids=frozenset({identifier}))
     calls = [call for call in store.all.call_args_list if "status='queued'" in call.args[0]]
     assert len(calls) == 1
     assert identifier not in calls[0].args[0]
@@ -36,13 +36,10 @@ def test_scope_ids_are_bound_parameters_not_sql_text():
     ledger.modify.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "enabled,scope", [(True, frozenset()), (False, frozenset({"synthetic"})), (False, None)]
-)
-def test_empty_scope_and_disabled_writes_only_perform_unknown_reads(enabled, scope):
+def test_empty_scope_only_performs_unknown_reads():
     store, ledger = Mock(), Mock()
     store.all.return_value = []
-    write_queued(store, ledger, enabled, transaction_ids=scope)
+    write_queued(store, ledger, transaction_ids=frozenset())
     assert store.all.call_count == 1
     assert "status='unknown'" in store.all.call_args.args[0]
     ledger.create.assert_not_called()
@@ -53,19 +50,27 @@ def test_subset_sends_only_selected_transactions_and_default_still_sends_remaini
     database, settings, tmp_path
 ):
     store, ledger = database.store, Ledger()
-    transactions = queued_transactions(store, tmp_path, settings, ledger)
-    selected = transactions[1]
-    write_queued(store, ledger, True, transaction_ids=frozenset({selected["id"]}))
+    bank_transactions = queued_transactions(store, tmp_path, settings, ledger)
+    selected = bank_transactions[1]
+    write_queued(store, ledger, transaction_ids=frozenset({selected["id"]}))
     assert len(ledger.create_calls) == 1
-    assert ledger.create_calls[0]["clientSessionId"] == selected["marker"]
-    states = {row["id"]: row["state"] for row in store.all("SELECT id,state FROM transactions")}
+    assert ledger.create_calls[0]["clientSessionId"] == selected["source_marker"]
+    states = {
+        row["id"]: row["import_status"]
+        for row in store.all("SELECT id,import_status FROM bank_transactions")
+    }
     assert states[selected["id"]] == "booked"
     assert all(
-        state == "queued" for identifier, state in states.items() if identifier != selected["id"]
+        import_status == "queued"
+        for identifier, import_status in states.items()
+        if identifier != selected["id"]
     )
-    write_queued(store, ledger, True)
+    write_queued(store, ledger)
     assert len(ledger.create_calls) == 3
-    assert all(row["state"] == "booked" for row in store.all("SELECT state FROM transactions"))
+    assert all(
+        row["import_status"] == "booked"
+        for row in store.all("SELECT import_status FROM bank_transactions")
+    )
 
 
 @pytest.mark.parametrize(
@@ -76,10 +81,10 @@ def test_empty_or_unmatched_scope_does_not_send_or_change_queued_jobs(
 ):
     store, ledger = database.store, Ledger()
     queued_transactions(store, tmp_path, settings, ledger)
-    before = store.all("SELECT * FROM jobs ORDER BY id")
-    write_queued(store, ledger, True, transaction_ids=scope)
+    before = store.all("SELECT * FROM background_task ORDER BY id")
+    write_queued(store, ledger, transaction_ids=scope)
     assert ledger.create_calls == ledger.modify_calls == []
-    assert store.all("SELECT * FROM jobs ORDER BY id") == before
+    assert store.all("SELECT * FROM background_task ORDER BY id") == before
 
 
 @pytest.mark.parametrize("failure", ["rejected", "unknown", "preflight"])
@@ -87,8 +92,8 @@ def test_scoped_failure_cannot_release_other_transactions(
     database, settings, tmp_path, monkeypatch, failure
 ):
     store, ledger = database.store, Ledger()
-    transactions = queued_transactions(store, tmp_path, settings, ledger)
-    selected = transactions[0]
+    bank_transactions = queued_transactions(store, tmp_path, settings, ledger)
+    selected = bank_transactions[0]
     if failure == "rejected":
 
         def reject(payload):
@@ -101,55 +106,63 @@ def test_scoped_failure_cannot_release_other_transactions(
     else:
         monkeypatch.setattr(ledger, "accounts", lambda: [])
     scope = frozenset({selected["id"]})
-    write_queued(store, ledger, True, transaction_ids=scope)
-    write_queued(store, ledger, True, transaction_ids=scope)
+    write_queued(store, ledger, transaction_ids=scope)
+    write_queued(store, ledger, transaction_ids=scope)
     assert len(ledger.create_calls) == (0 if failure == "preflight" else 1)
-    assert all(call["clientSessionId"] == selected["marker"] for call in ledger.create_calls)
-    outside = store.all("SELECT * FROM jobs WHERE transaction_id<>%s", (selected["id"],))
+    assert all(call["clientSessionId"] == selected["source_marker"] for call in ledger.create_calls)
+    outside = store.all(
+        "SELECT * FROM background_task WHERE bank_transaction_id<>%s", (selected["id"],)
+    )
     assert len(outside) == 2 and all(job["status"] == "queued" for job in outside)
     if failure == "unknown":
         assert (
-            store.one("SELECT status FROM jobs WHERE transaction_id=%s", (selected["id"],))[
-                "status"
-            ]
+            store.one(
+                "SELECT status FROM background_task WHERE bank_transaction_id=%s", (selected["id"],)
+            )["status"]
             == "unknown"
         )
 
 
 def test_scope_also_bounds_legacy_settlement_posts(database, settings, tmp_path):
     store, ledger = database.store, Ledger()
-    transactions = queued_transactions(store, tmp_path, settings, ledger)
-    for tx in transactions:
-        facts = {**tx["facts"], "original_currency": "USD"}
-        decision = {
-            **tx["decision"],
+    bank_transactions = queued_transactions(store, tmp_path, settings, ledger)
+    for tx in bank_transactions:
+        import_decision = {
+            **tx["import_decision"],
             "target_currency": "CNY",
             "rate_snapshot": {"dataSource": "synthetic old quote", "adoptedRate": "7"},
         }
-        payload = {**decision["payload"], "sourceAmount": 7000}
-        decision["payload"] = payload
+        payload = {**import_decision["payload"], "sourceAmount": 7000}
+        import_decision["payload"] = payload
         store.execute(
-            "UPDATE transactions SET facts=%s,decision=%s WHERE id=%s", (facts, decision, tx["id"])
+            "UPDATE bank_transactions SET original_currency='USD',import_decision=%s WHERE id=%s",
+            (import_decision, tx["id"]),
         )
-        store.execute("UPDATE jobs SET payload=%s WHERE transaction_id=%s", (payload, tx["id"]))
-    write_queued(store, ledger, True)
-    booked = store.all("SELECT * FROM transactions ORDER BY id")
+        store.execute(
+            "UPDATE background_task SET payload=%s WHERE bank_transaction_id=%s",
+            (payload, tx["id"]),
+        )
+    write_queued(store, ledger)
+    booked = store.all("SELECT * FROM bank_transactions ORDER BY id")
     for tx in booked:
         store.execute(
-            "INSERT INTO jobs(transaction_id,kind,version,operation_key,payload,target_id) VALUES (%s,'settle_amount',1,%s,%s,%s)",
+            "INSERT INTO background_task(bank_transaction_id,task_type,decision_version,operation_key,payload,ledger_transaction_id) VALUES (%s,'settle_amount',1,%s,%s,%s)",
             (
                 tx["id"],
                 "synthetic-settle:" + tx["id"],
                 {"type": 3, "sourceAccountId": "account", "sourceAmount": 7200},
-                tx["target_id"],
+                tx["ledger_transaction_id"],
             ),
         )
-        store.execute("UPDATE transactions SET state='queued' WHERE id=%s", (tx["id"],))
+
     selected = booked[1]
-    write_queued(store, ledger, True, transaction_ids=frozenset({selected["id"]}))
-    assert len(ledger.modify_calls) == 1 and ledger.modify_calls[0]["id"] == selected["target_id"]
+    write_queued(store, ledger, transaction_ids=frozenset({selected["id"]}))
+    assert (
+        len(ledger.modify_calls) == 1
+        and ledger.modify_calls[0]["id"] == selected["ledger_transaction_id"]
+    )
     for tx in booked:
-        assert ledger.records[tx["target_id"]]["sourceAmount"] == (
+        assert ledger.records[tx["ledger_transaction_id"]]["sourceAmount"] == (
             7200 if tx["id"] == selected["id"] else 7000
         )
 
@@ -158,19 +171,23 @@ def test_readonly_unknown_confirmation_outside_scope_does_not_dispatch_queued_wr
     database, settings, tmp_path
 ):
     store, ledger = database.store, Ledger()
-    transactions = queued_transactions(store, tmp_path, settings, ledger)
-    unknown = transactions[0]
-    payload = unknown["decision"]["payload"]
+    bank_transactions = queued_transactions(store, tmp_path, settings, ledger)
+    unknown = bank_transactions[0]
+    payload = unknown["import_decision"]["payload"]
     ledger.records["previously-created"] = {"id": "previously-created", **payload}
     store.execute(
-        "UPDATE jobs SET status='unknown',target_id='previously-created' WHERE transaction_id=%s",
+        "UPDATE background_task SET status='unknown',ledger_transaction_id='previously-created' WHERE bank_transaction_id=%s",
         (unknown["id"],),
     )
-    store.execute("UPDATE transactions SET state='unknown' WHERE id=%s", (unknown["id"],))
-    write_queued(store, ledger, True, transaction_ids=frozenset())
+    store.execute(
+        "UPDATE bank_transactions SET import_status='unknown' WHERE id=%s", (unknown["id"],)
+    )
+    write_queued(store, ledger, transaction_ids=frozenset())
     assert (
-        store.one("SELECT state FROM transactions WHERE id=%s", (unknown["id"],))["state"]
+        store.one("SELECT import_status FROM bank_transactions WHERE id=%s", (unknown["id"],))[
+            "import_status"
+        ]
         == "booked"
     )
     assert ledger.create_calls == ledger.modify_calls == []
-    assert store.one("SELECT count(*) AS n FROM jobs WHERE status='queued'")["n"] == 2
+    assert store.one("SELECT count(*) AS n FROM background_task WHERE status='queued'")["n"] == 2

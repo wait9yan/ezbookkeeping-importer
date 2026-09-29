@@ -38,7 +38,7 @@ def _money(value):
     value = re.sub(r"\s+", "", value).removeprefix("¥").removeprefix("￥").removesuffix("元")
     if not MONEY.fullmatch(value):
         raise ValueError("金额格式不合法或超过两位小数")
-    return Decimal(value.replace(",", ""))
+    return Decimal(value.replace(",", "")).quantize(Decimal("0.01"))
 
 
 def _issue(code, locator, detail):
@@ -79,6 +79,8 @@ def _transaction_day(value, posted):
 
 
 class BankParser:
+    version = PARSER_VERSION
+
     def __init__(self, timezone="Asia/Shanghai", context="default"):
         self.timezone = ZoneInfo(timezone)
         self.context = context
@@ -90,7 +92,7 @@ class BankParser:
         kind: MailKind = BANK_SUBJECTS.get(normalized_subject, "other")
         # Template detection is deliberately separate from source authentication.
         metadata = {
-            "parser_version": PARSER_VERSION,
+            "parser_version": self.version,
             "subject": subject,
             "normalized_subject": normalized_subject,
             "forwarded": forwarded,

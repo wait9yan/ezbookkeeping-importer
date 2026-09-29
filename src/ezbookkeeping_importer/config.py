@@ -32,6 +32,7 @@ class MailSettings(StrictModel):
     password: SecretStr = SecretStr("")
     timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
     source_id: str
+    rescan_days: int = Field(default=7, ge=0, strict=True)
 
     @field_validator("host")
     @classmethod
@@ -63,15 +64,10 @@ class Settings(StrictModel):
     mail: MailSettings
     timezone: str
     date_only_time: time | None = None
-    source_policy: str = "manual_acceptance"
-    trusted_authserv_id: str | None = None
-    writes_enabled: bool = False
-    historical_boundary_reviewed: bool = False
-    refund_ownership_confirmed: bool = False
     repayment_ownership_confirmed: bool = False
-    evidence_dir: Path = Path("var/evidence")
-    report_dir: Path = Path("var/reports")
-    log_dir: Path = Path("var/logs")
+    evidence_dir: Path = Path("data/email")
+    report_dir: Path = Path("data/reports")
+    log_dir: Path = Path("data/logs")
     log_max_bytes: int = Field(default=10_485_760, gt=0)
     log_backups: int = Field(default=5, ge=1)
     repayments: tuple[RepaymentMapping, ...] = ()
@@ -121,20 +117,6 @@ class Settings(StrictModel):
             raise PydanticCustomError("config_timezone", "must be Asia/Shanghai")
         if self.classification_mode not in {"ai", "rules_only"}:
             raise PydanticCustomError("config_classification_mode", "must be ai or rules_only")
-        if self.source_policy not in {"manual_acceptance", "qq_authentication_results"}:
-            raise PydanticCustomError(
-                "config_source_policy", "must be manual_acceptance or qq_authentication_results"
-            )
-        if self.source_policy == "qq_authentication_results" and not self.trusted_authserv_id:
-            raise PydanticCustomError(
-                "config_trusted_authserv_id",
-                "required when source_policy=qq_authentication_results",
-            )
-        if self.writes_enabled and not self.historical_boundary_reviewed:
-            raise PydanticCustomError(
-                "config_historical_boundary_reviewed",
-                "must be true before writes_enabled can be enabled",
-            )
         return self
 
 
@@ -162,7 +144,7 @@ ENV_FIELDS = {
     "log_max_bytes": "EBKI_LOG_MAX_BYTES",
     "log_backups": "EBKI_LOG_BACKUPS",
 }
-LOCAL_COMMANDS = {"migrate", "status", "issues", "sync", "import-eml", "resolve"}
+LOCAL_COMMANDS = {"migrate", "status", "issues", "sync", "resolve"}
 
 
 def command_capabilities(
@@ -183,7 +165,7 @@ def command_capabilities(
         raise ConfigurationError("unknown command dependency profile")
     if command == "migrate":
         capabilities.add("create_database")
-    if command in {"worker", "import-eml"}:
+    if command == "worker":
         capabilities.add("evidence")
     if command == "worker":
         capabilities.add("pipeline")
@@ -249,9 +231,6 @@ SAFE_VALIDATION_REASONS = {
 BUSINESS_ERROR_FIELDS = {
     "config_timezone": "timezone",
     "config_classification_mode": "classification_mode",
-    "config_source_policy": "source_policy",
-    "config_trusted_authserv_id": "trusted_authserv_id",
-    "config_historical_boundary_reviewed": "historical_boundary_reviewed",
 }
 
 
@@ -283,13 +262,19 @@ def load_settings(
     except OSError:
         raise ConfigurationError("business configuration file cannot be read") from None
     retired = []
+    for field in ("writes_enabled", "refund_ownership_confirmed", "historical_boundary_reviewed"):
+        if field in data:
+            retired.append(
+                f"{field} -> remove; worker automatically processes validated transactions"
+            )
+    for field in ("source_policy", "trusted_authserv_id"):
+        if field in data:
+            retired.append(
+                f"{field} -> remove; source authentication is selected from the IMAP host"
+            )
     if "accounts" in data:
         retired.append(
             "accounts -> remove this mapping and put card numbers in ezBookkeeping account comments"
-        )
-    if "exchange_rate_max_age_hours" in data:
-        retired.append(
-            "exchange_rate_max_age_hours -> remove; new imports use original-currency accounts without conversion"
         )
     if retired:
         raise ConfigurationError("retired TOML settings: " + "; ".join(retired))

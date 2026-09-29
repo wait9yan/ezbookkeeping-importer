@@ -42,9 +42,7 @@ def test_schedule_boundaries():
 
 def test_source_requires_delivery_context():
     raw = b"From: ccsvc@message.cmbchina.com\r\nAuthentication-Results: mx.qq.com; spf=pass; dkim=pass; dmarc=pass header.from=message.cmbchina.com\r\n\r\n"
-    settings = SimpleNamespace(
-        source_policy="qq_authentication_results", trusted_authserv_id="mx.qq.com"
-    )
+    settings = SimpleNamespace(mail=SimpleNamespace(host="imap.qq.com"))
     assert source_status(raw, settings, "imap")[0] == "requires_acceptance"
     raw = b"Received: from bank by mx.qq.com; Thu, 1 Jan 2026 12:00:00 +0800\r\n" + raw
     assert source_status(raw, settings, "imap")[0] == "verified"
@@ -95,19 +93,22 @@ def test_rules_only_never_calls_configured_ai():
     ai = Mock()
     transaction = {
         "id": "synthetic-row",
-        "marker": "ebki-synthetic",
-        "facts": {
-            "event_type": "expense",
-            "occurred_date": "2026-01-01",
-            "occurred_at": "2026-01-01T12:00:00+08:00",
-            "time_precision": "second",
-            "original_amount": "10.00",
-            "original_currency": "CNY",
-            "card_reference": "1234",
-            "merchant_raw": "合成商户",
-        },
+        "source_marker": "ebki-synthetic",
+        "event_type": "expense",
+        "occurred_date": "2026-01-01",
+        "occurred_at": "2026-01-01T12:00:00+08:00",
+        "time_precision": "second",
+        "original_amount": "10.00",
+        "original_currency": "CNY",
+        "card_reference": "1234",
+        "merchant_name": "合成商户",
+        "report_row_key": "row",
+        "posted_date": None,
+        "bank_settlement_amount": None,
+        "bank_settlement_currency": None,
+        "source_details": {},
     }
-    decision = decide(transaction, settings, ledger, ai)
+    import_decision = decide(transaction, settings, ledger, ai)
     ai.classify.assert_not_called()
-    assert decision["payload"]["categoryId"] == "fallback"
-    assert decision["classification"]["classification_status"] == "unmatched"
+    assert import_decision["payload"]["categoryId"] == "fallback"
+    assert import_decision["classification"]["classification_status"] == "unmatched"

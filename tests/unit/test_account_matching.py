@@ -84,17 +84,20 @@ def test_multiple_card_mentions_in_one_account_are_one_candidate():
 def transaction(event="expense", currency="USD"):
     return {
         "id": "synthetic",
-        "marker": "ebki-synthetic",
-        "facts": {
-            "event_type": event,
-            "occurred_date": "2026-01-01",
-            "occurred_at": "2026-01-01T12:00:00+08:00",
-            "time_precision": "second",
-            "card_reference": "1234",
-            "merchant_raw": "合成商户",
-            "original_currency": currency,
-            "original_amount": "-10.00" if event == "refund" else "10.00",
-        },
+        "source_marker": "ebki-synthetic",
+        "event_type": event,
+        "occurred_date": "2026-01-01",
+        "occurred_at": "2026-01-01T12:00:00+08:00",
+        "time_precision": "second",
+        "card_reference": "1234",
+        "merchant_name": "合成商户",
+        "original_currency": currency,
+        "original_amount": "-10.00" if event == "refund" else "10.00",
+        "report_row_key": "row",
+        "posted_date": None,
+        "bank_settlement_amount": None,
+        "bank_settlement_currency": None,
+        "source_details": {},
     }
 
 
@@ -103,7 +106,6 @@ def settings():
         mail=MailSettings(source_id="synthetic"),
         timezone="Asia/Shanghai",
         classification_mode="rules_only",
-        refund_ownership_confirmed=True,
     )
 
 
@@ -119,34 +121,36 @@ def test_new_decisions_use_original_currency_without_rate_request(event, currenc
     ]
     ledger.rates.side_effect = AssertionError("no currency conversion")
     tx = transaction(event, currency)
-    decision = decide(tx, settings(), ledger, None)
-    assert decision["target_currency"] == currency
-    assert decision["payload"]["sourceAmount"] == amount
-    assert decision["payload"]["sourceAccountId"] == currency.lower()
-    assert decision["rate_snapshot"] is None
-    assert CARD not in json.dumps(decision)
+    import_decision = decide(tx, settings(), ledger, None)
+    assert import_decision["target_currency"] == currency
+    assert import_decision["payload"]["sourceAmount"] == amount
+    assert import_decision["payload"]["sourceAccountId"] == currency.lower()
+    assert import_decision["rate_snapshot"] is None
+    assert CARD not in json.dumps(import_decision)
     ledger.rates.assert_not_called()
-    tx["decision"] = decision
+    tx["import_decision"] = import_decision
     refreshed = refresh_classification(tx, settings(), ledger, None)
-    assert refreshed["target_currency"] == currency and refreshed["payload"] == decision["payload"]
+    assert (
+        refreshed["target_currency"] == currency
+        and refreshed["payload"] == import_decision["payload"]
+    )
 
 
 def test_legacy_decision_currency_is_cny_not_original_usd():
     tx = transaction()
-    tx["decision"] = {"payload": {"sourceAmount": 7000}, "rate_snapshot": {"adoptedRate": "7"}}
+    tx["import_decision"] = {
+        "payload": {"sourceAmount": 7000},
+        "rate_snapshot": {"adoptedRate": "7"},
+    }
     assert decision_currency(tx) == "CNY"
     with pytest.raises(ImporterError, match="persisted"):
         decision_currency(transaction())
 
 
-def test_retired_toml_fields_have_explicit_migration_error(tmp_path, monkeypatch):
+def test_retired_account_mapping_has_explicit_migration_error(tmp_path, monkeypatch):
     path = tmp_path / "business.toml"
-    path.write_text(
-        'timezone="Asia/Shanghai"\nexchange_rate_max_age_hours=48\n[[accounts]]\ncard_reference="SECRET_CARD"\n'
-    )
+    path.write_text('timezone="Asia/Shanghai"\n[[accounts]]\ncard_reference="SECRET_CARD"\n')
     with pytest.raises(ConfigurationError) as error:
         load_settings(str(path), command="migrate")
-    assert "accounts ->" in str(error.value) and "exchange_rate_max_age_hours ->" in str(
-        error.value
-    )
+    assert "accounts ->" in str(error.value)
     assert "SECRET_CARD" not in str(error.value)

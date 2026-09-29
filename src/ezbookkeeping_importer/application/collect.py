@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from typing import Any
 from email import policy
 from email.parser import BytesParser
-from email.utils import parseaddr
+from email.utils import parseaddr, parsedate_to_datetime
 
 from ..domain.errors import ImporterError
 from ..domain.mail import bank_candidate, normalize_subject
@@ -29,12 +29,10 @@ def request_sync(store: Store, since: date | None = None, until: date | None = N
     kind = "sync_range" if payload else "sync"
     with store.transaction():
         result = store.execute(
-            """INSERT INTO jobs(kind,operation_key,payload) VALUES (%s,%s,%s)
-            ON CONFLICT DO NOTHING RETURNING id""",
+            """INSERT INTO background_task(task_type,operation_key,payload) VALUES (%s,%s,%s)
+            ON CONFLICT(task_type) WHERE task_type='sync' AND status IN ('queued','dispatching') DO NOTHING RETURNING id""",
             (kind, str(uuid.uuid4()), payload),
         ).fetchone()
-        if result:
-            store.audit("sync_requested", str(result["id"]), payload)
         return result is not None
 
 
@@ -168,12 +166,12 @@ def _qq_authentication_results(value: str) -> bool:
 
 
 def source_status(raw: bytes, settings, origin: str) -> tuple[str, str]:
-    if origin != "imap" or settings.source_policy == "manual_acceptance":
+    if origin != "imap":
         return "requires_acceptance", "source requires explicit acceptance"
-    if (settings.trusted_authserv_id or "").lower() != "mx.qq.com":
+    if settings.mail.host.lower().removesuffix(".") != "imap.qq.com":
         return (
             "requires_acceptance",
-            "QQ policy requires the configured mx.qq.com authentication service",
+            "source authentication is not implemented for the configured IMAP host",
         )
     message = BytesParser(policy=policy.default).parsebytes(raw, headersonly=True)
     if message.defects:
@@ -213,56 +211,89 @@ def source_status(raw: bytes, settings, origin: str) -> tuple[str, str]:
     return "verified", "QQ receiving host and mx.qq.com bank authentication accepted"
 
 
-def ingest(store: Store, evidence, raw: bytes, settings, origin: str) -> str:
+def ingest(store: Store, evidence, raw: bytes, settings, source_item_id: int) -> str:
     digest, path = evidence.put(raw)
-    state, reason = source_status(raw, settings, origin)
+    state, reason = source_status(raw, settings, "imap")
+    message = BytesParser(policy=policy.default).parsebytes(raw, headersonly=True)
+    sent_at = None
+    header_issues = []
+    if message.get("Date"):
+        try:
+            sent_at = parsedate_to_datetime(str(message["Date"]))
+            if sent_at.tzinfo is None:
+                raise ValueError("timezone missing")
+        except (ValueError, TypeError, OverflowError):
+            sent_at = None
+            header_issues.append(
+                {
+                    "code": "invalid_header_date",
+                    "locator": "Date",
+                    "detail": "邮件时间缺失时区或格式无效",
+                }
+            )
     with store.transaction():
-        inserted = store.execute(
-            """INSERT INTO messages(id,evidence_path,origin,source_status,source_reason)
-            VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id""",
-            (digest, path, origin, state, reason),
-        ).fetchone()
-        if inserted:
-            store.audit("evidence_saved", digest, {"origin": origin})
+        item = store.one(
+            "SELECT * FROM email_source_item WHERE id=%s FOR UPDATE", (source_item_id,)
+        )
+        if not item or item["source_id"] != settings.mail.source_id:
+            raise ImporterError("source item does not match configured mailbox")
+        if item["status"] == "collected" and item["email_id"] != digest:
+            raise ImporterError("source position already references different email bytes")
+        other = store.one(
+            "SELECT id FROM email_source_item WHERE email_id=%s AND source_id<>%s LIMIT 1",
+            (digest, item["source_id"]),
+        )
+        if other:
+            raise ImporterError("identical email cannot belong to different business sources")
+        store.execute(
+            """INSERT INTO email(id,raw_path,subject,sender_address,sent_at,header_message_id,parse_issues)
+            VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING""",
+            (
+                digest,
+                path,
+                str(message["Subject"]) if message["Subject"] else None,
+                parseaddr(str(message["From"]))[1] or None,
+                sent_at,
+                str(message["Message-ID"]) if message["Message-ID"] else None,
+                header_issues,
+            ),
+        )
+        store.execute(
+            """UPDATE email_source_item SET status='collected',email_id=%s,source_status=%s,
+            source_reason=%s,collected_at=COALESCE(collected_at,now()),last_error=NULL,skip_reason=NULL,
+            updated_at=now() WHERE id=%s""",
+            (digest, state, reason, source_item_id),
+        )
+        if state == "verified":
+            store.execute(
+                "UPDATE email SET parse_status='pending' WHERE id=%s AND parse_status='parsed' AND report_key IS NULL",
+                (digest,),
+            )
     return digest
 
 
 def _download_failure(store: Store, task: dict, error_type: str, stage: str):
     with store.transaction():
         store.execute(
-            "UPDATE downloads SET status='failed',error=%s WHERE id=%s", (error_type, task["id"])
+            "UPDATE email_source_item SET status='failed',last_error=%s,updated_at=now() WHERE id=%s",
+            (stage + ": " + error_type, task["id"]),
         )
-        store.issue("download_failed", str(task["id"]), {"error_type": error_type, "stage": stage})
 
 
-def _ignore_downloads(store: Store, ids: list[int]):
+def _ignore_email_source_item(store: Store, ids: list[int]):
     if not ids:
         return
     with store.transaction():
         store.execute(
-            """UPDATE downloads SET status='ignored',error='non-bank message'
-            WHERE id IN (SELECT value::bigint FROM jsonb_array_elements_text(%s))""",
-            (ids,),
-        )
-        store.execute(
-            """UPDATE issues SET resolved=true WHERE code='download_failed'
-            AND entity_id IN (SELECT value FROM jsonb_array_elements_text(%s))""",
+            """UPDATE email_source_item SET status='skipped',skip_reason='non-bank message',
+            last_error=NULL,updated_at=now() WHERE id IN (SELECT value::bigint FROM jsonb_array_elements_text(%s))""",
             (ids,),
         )
 
 
 def _process_candidate(store: Store, mail: Mail, evidence, settings, folder: str, task: dict):
     raw = mail.fetch(folder, task["uid"])
-    message_id = ingest(store, evidence, raw, settings, "imap")
-    with store.transaction():
-        store.execute(
-            "UPDATE downloads SET status='done',message_id=%s,error=NULL WHERE id=%s",
-            (message_id, task["id"]),
-        )
-        store.execute(
-            "UPDATE issues SET resolved=true WHERE code='download_failed' AND entity_id=%s",
-            (str(task["id"]),),
-        )
+    ingest(store, evidence, raw, settings, task["id"])
 
 
 def collect(
@@ -278,80 +309,71 @@ def collect(
     failed_folders = 0
     for folder in mail.folders():
         previous = store.one(
-            "SELECT * FROM cursors WHERE source_id=%s AND folder=%s",
+            "SELECT * FROM email_sync_checkpoint WHERE source_id=%s AND folder=%s",
             (settings.mail.source_id, folder),
         )
         day = datetime.now(ZoneInfo(settings.timezone)).date()
         overlap = (
-            day - timedelta(days=7)
+            day - timedelta(days=settings.mail.rescan_days)
             if previous
-            and previous["checked_at"].astimezone(ZoneInfo(settings.timezone)).date() < day
+            and settings.mail.rescan_days > 0
+            and previous["last_scanned_at"].astimezone(ZoneInfo(settings.timezone)).date() < day
             else None
         )
-        folder_key = str(uuid.uuid5(uuid.NAMESPACE_URL, settings.mail.source_id + ":" + folder))
         try:
             if bounded:
                 validity, uids = mail.scan(folder, since=since, until=until)
             else:
                 validity, uids = mail.scan(
-                    folder, previous["scanned_uid"] if previous else 0, overlap
+                    folder, previous["registered_uid"] if previous else 0, overlap
                 )
-                if previous and validity != previous["validity"]:
+                if previous and validity != previous["uid_validity"]:
                     validity, uids = mail.scan(folder)
-        except Exception as exc:
+        except Exception:
             # A LIST entry can be unreadable; preserve its failure without starving other folders.
-            store.issue(
-                "folder_scan_failed",
-                folder_key,
-                {
-                    "source_id": settings.mail.source_id,
-                    "folder": folder,
-                    "error_type": type(exc).__name__,
-                },
-            )
             failed_folders += 1
             continue
-        store.execute(
-            "UPDATE issues SET resolved=true WHERE code='folder_scan_failed' AND entity_id=%s",
-            (folder_key,),
-        )
         upper = max(
             uids
-            + ([previous["scanned_uid"]] if previous and validity == previous["validity"] else [0])
+            + (
+                [previous["registered_uid"]]
+                if previous and validity == previous["uid_validity"]
+                else [0]
+            )
         )
         with store.transaction():
             if not bounded:
                 previous = store.one(
-                    "SELECT * FROM cursors WHERE source_id=%s AND folder=%s",
+                    "SELECT * FROM email_sync_checkpoint WHERE source_id=%s AND folder=%s",
                     (settings.mail.source_id, folder),
                 )
                 initial_upper = (
-                    previous["scan_upper"]
-                    if previous and previous["validity"] == validity
+                    previous["initial_scan_upper_uid"]
+                    if previous and previous["uid_validity"] == validity
                     else upper
                 )
                 store.execute(
-                    """INSERT INTO cursors(source_id,folder,validity,scan_upper,scanned_uid)
+                    """INSERT INTO email_sync_checkpoint(source_id,folder,uid_validity,initial_scan_upper_uid,registered_uid)
                     VALUES (%s,%s,%s,%s,%s) ON CONFLICT(source_id,folder) DO UPDATE SET
-                    validity=excluded.validity,scan_upper=excluded.scan_upper,scanned_uid=excluded.scanned_uid,
-                    historical_complete=false,checked_at=now()""",
+                    uid_validity=excluded.uid_validity,initial_scan_upper_uid=excluded.initial_scan_upper_uid,registered_uid=excluded.registered_uid,
+                    last_scanned_at=now()""",
                     (settings.mail.source_id, folder, validity, initial_upper, upper),
                 )
             # Persist candidate tasks before advancing the scan snapshot. Re-scanning UIDs also
-            # covers moved messages; unique locations keep downloads incremental.
+            # covers moved messages; unique locations keep email_source_item incremental.
             if uids:
                 store.execute(
-                    """INSERT INTO downloads(source_id,folder,validity,uid)
+                    """INSERT INTO email_source_item(source_id,folder,uid_validity,uid)
                     SELECT %s,%s,%s,value::bigint FROM jsonb_array_elements_text(%s)
-                    ON CONFLICT DO NOTHING""",
+                    ON CONFLICT(source_id,folder,uid_validity,uid) DO NOTHING""",
                     (settings.mail.source_id, folder, validity, uids),
                 )
         selected_uids = set(uids)
         after_uid = 0
         while True:
             pending = store.all(
-                """SELECT * FROM downloads WHERE source_id=%s AND folder=%s
-                AND validity=%s AND status IN ('pending','failed') AND uid>%s ORDER BY uid LIMIT %s""",
+                """SELECT * FROM email_source_item WHERE source_id=%s AND folder=%s
+                AND uid_validity=%s AND status IN ('pending','failed') AND uid>%s ORDER BY uid LIMIT %s""",
                 (settings.mail.source_id, folder, validity, after_uid, HEADER_BATCH_SIZE),
             )
             if not pending:
@@ -388,19 +410,11 @@ def collect(
                 except Exception as exc:
                     _download_failure(store, task, type(exc).__name__, "headers")
             # Database failures propagate: rollback preserves all these locations for retry.
-            _ignore_downloads(store, ignored_ids)
+            _ignore_email_source_item(store, ignored_ids)
             for task in candidates:
                 try:
                     _process_candidate(store, mail, evidence, settings, folder, task)
                 except Exception as exc:
                     _download_failure(store, task, type(exc).__name__, "message")
-        if not bounded:
-            store.execute(
-                """UPDATE cursors SET historical_complete=NOT EXISTS(
-                SELECT 1 FROM downloads d WHERE d.source_id=cursors.source_id AND d.folder=cursors.folder
-                AND d.validity=cursors.validity AND d.uid<=cursors.scan_upper AND d.status IN ('pending','failed'))
-                WHERE source_id=%s AND folder=%s""",
-                (settings.mail.source_id, folder),
-            )
     if failed_folders:
         raise ImporterError(f"{failed_folders} mailbox folders could not be scanned; see issues")

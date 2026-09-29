@@ -3,11 +3,10 @@ import json
 import sys
 import re
 from datetime import date
-from pathlib import Path
 
 from ..bootstrap import Runtime
 from ..config import load_settings
-from ..application.collect import ingest, request_sync, validate_scan_range
+from ..application.collect import request_sync, validate_scan_range
 from ..application.resolve import resolve
 from .worker import run
 from ..application import maintenance
@@ -40,11 +39,13 @@ def main():
     worker = commands.add_parser("worker")
     worker.add_argument("--once", action="store_true")
     issues = commands.add_parser("issues")
-    issues.add_argument("--id", type=int)
-    issues.add_argument("--all", action="store_true")
+    issues.add_argument("--entity-type")
+    issues.add_argument("--entity-id")
     resolution = commands.add_parser("resolve")
-    resolution.add_argument("id", type=int)
-    resolution.add_argument("--version", required=True, type=int)
+    resolution.add_argument("entity_type")
+    resolution.add_argument("entity_id")
+    resolution.add_argument("--code")
+    resolution.add_argument("--version", type=int, help="交易及账本任务的当前决定版本")
     resolution.add_argument(
         "--action",
         required=True,
@@ -53,8 +54,6 @@ def main():
     resolution.add_argument("--reason", required=True)
     resolution.add_argument("--target-id")
     resolution.add_argument("--account-id")
-    importing = commands.add_parser("import-eml")
-    importing.add_argument("paths", nargs="+")
     args = parser.parse_args()
     if args.command == "sync":
         try:
@@ -84,30 +83,23 @@ def main():
                     "until": args.until,
                 }
             )
-        elif args.command == "import-eml":
-            output(
-                {
-                    "message_ids": [
-                        ingest(store, runtime.evidence, Path(path).read_bytes(), settings, "eml")
-                        for path in args.paths
-                    ]
-                }
-            )
         elif args.command == "status":
-            output(maintenance.status(store, settings))
+            output(maintenance.status(store))
         elif args.command == "issues":
-            output(maintenance.issues(store, args.id, args.all))
+            output(maintenance.issues(store, args.entity_type, args.entity_id))
         elif args.command == "resolve":
             output(
                 resolve(
                     store,
                     runtime.optional_ledger,
-                    args.id,
+                    args.entity_type,
+                    args.entity_id,
                     args.version,
                     args.action,
                     args.reason,
                     args.target_id,
                     args.account_id,
+                    args.code,
                 )
             )
         elif args.command == "doctor":
@@ -116,8 +108,6 @@ def main():
                     "database": bool(store.one("SELECT 1 AS connected")),
                     "account_count": len(runtime.ledger.accounts()),
                     "category_count": len(runtime.ledger.categories()),
-                    "source_policy": settings.source_policy,
-                    "writes_enabled": settings.writes_enabled,
                     "configuration_valid": True,
                     "imap_connection": "not_checked",
                     "ai_connection": "not_checked",

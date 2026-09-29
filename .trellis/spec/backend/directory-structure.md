@@ -2,8 +2,8 @@
 
 应用入口为 `src/ezbookkeeping_importer/`，采用领域、应用、适配器及入口分层。无网页服务。
 
-- `domain/models.py` 保存解析边界的不可变 Pydantic 模型，`money.py` 负责 Decimal 金额，`errors.py` 定义业务和外部结果错误。
-- `application/collect.py`、`parse.py`、`classify.py`、`write.py`、`reconcile.py`、`resolve.py` 是六个业务用例。`service.py` 组合一次后台周期，`maintenance.py` 负责 CLI 状态投影及恢复审计。
+- `domain/models.py` 保存解析边界的不可变 Pydantic 模型，`identity.py` 统一交易 ID 与规范化报告指纹，`money.py` 负责 Decimal 金额，`errors.py` 定义业务和外部结果错误。
+- `application/collect.py`、`parse.py`、`classify.py`、`write.py`、`reconcile.py`、`resolve.py` 是六个业务用例。`service.py` 组合一次后台周期，`maintenance.py` 负责当前对象问题汇总、CLI 状态投影及恢复核实；`records.py` 负责明确事实列到解析边界的内存投影，不持久化旧 facts 副本。
 - `application/ports.py` 定义实际需要的外部能力；业务代码不导入具体 HTTP、IMAP 或 PostgreSQL 实现。具体依赖仅在 `bootstrap.py` 组装。
 - `adapters/banks/cmb/parser.py` 处理招行模板；`mail/imap.py` 处理只读 IMAP；`ezbookkeeping/client.py` 与 `llm/openai.py` 处理外部请求；`persistence/` 处理数据库，`adapters/evidence_store.py` 处理原件存储。
 - `config.py` 合并业务 TOML 与运行环境变量，按命令依赖校验；来源契约见 [配置规范](configuration.md)。`entrypoints/cli.py` 和 `entrypoints/worker.py` 入口仅处理参数、进程生命周期及结果展示；不得复制分类、写入或恢复状态机。

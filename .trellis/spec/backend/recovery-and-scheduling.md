@@ -9,22 +9,24 @@
 - `Mail.fetch_headers_batch(folder, uids: tuple[int, ...]) -> dict[int, bytes]` 每批最多 50 UID，一次 EXAMINE 验证 UIDVALIDITY 后执行 UID FETCH 集合。校验每条 UID 归属、重复与完整 literal；缺失 UID 显式失败，畸形响应整批失败。保留单封 `fetch_headers` 和正文 `fetch`，银行候选才取正文。
 - `PostgresStore.is_connection_usable() -> bool` 检查连接是否 closed / broken；失效时 worker 退出，由进程管理器重启并重新获取锁。
 - `reconcile_if_due(store, ledger, report_dir, now=None) -> bool` 返回本轮是否核对。
-- `jobs` 的 `kind=reconcile_checkpoint`、`operation_key=reconciliation-checkpoint` 保存唯一核对检查点，不作为可发送任务领取。
+- `bank_report` 的月报字段保存每份报告的核对尝试、发布、输入指纹、版本与下一次检查时间，不建立伪后台任务检查点。
 
 ## 3. 数据契约
 
-检查点 payload 包含 `change={audit_count,report_count}`、`completed_at`、`next_check_at`、`queries_succeeded`。统计已提交业务审计数量，避免仅比较最大 ID 时遗漏较小序号的迟提交事务。业务变化立即核对；无变化每小时历史核对，查询失败缩短至十分钟。成功后才更新检查点。
+报告按完整本地输入指纹检测变化，包含报告内容、候选交易集合、决定版本及远端关联。变化立即核对；无变化成功间隔一小时、失败重试十分钟。整轮失败只更新尝试/错误/重试信息，不刷新成功发布时间，不清空旧结果。发布前在短事务中重验快照和 `reconciliation_version`，拒绝过时输入与旧轮晚到。结果、报告摘要及必要结算操作同事务提交。
 
-显式 retry 的未关联 create 决定携带 `reclassify_requested`；重新分类只更新分类和分类审计，保留其余 payload、汇率快照及人工账户修正。发送中／结果不明不可触发重新分类或重发。`write_preflight_failed` 记录 `job_id` 和 `version`；完成仅关闭本操作同版本异常。旧数据缺版本仅在同任务 v1 时可证明归属，不猜测后续版本。
+显式 retry 的未关联 create 决定携带 `reclassify_requested`；重新分类保留已冻结金额、时间、marker 及人工账户决定。发送中／结果不明不可重分类或重发；任务完成和清错限定本任务及决定版本，不用全局问题 ID 或审计事件推断许可。当前错误归属对象，成功仅清本阶段错误。
+
+同步任务 `sync/sync_range` 中断可排队重扫；账本任务 `create/settle_amount/settle_currency` 中断转 unknown，通过来源标记或冻结远端 ID 回读核实。已恢复既有远端关联或目标已达成可零写入尝试完成，不伪造实际发送。
 
 ## 4. 校验与错误矩阵
 
 | 情况 | 结果 |
 | --- | --- |
-| 非银行邮件头 | downloads 持久 ignored，可推进游标，恢复后关闭该下载异常 |
+| 非银行邮件头 | email_source_item 持久 skipped，skip_reason 明确，登记与检查点同事务；正常跳过无 last_error |
 | 银行未知主题或转发已知主题 | 继续取全文，由解析／来源接纳决定 |
 | 邮件头／正文失败或 UIDVALIDITY 改变 | 保留失败任务，不静默跳过 |
-| 外币远端日期变化 | target_changed；仅历史 CNY 暂估允许已有授权金额结算，不改回日期；原币决定不被跨币结算覆盖 |
+| 外币远端日期变化 | target_changed；仅历史 CNY 暂估允许已有授权金额结算，不改回日期；已授权 USD→CNY 结算保留当前日期，仅改账户和金额 |
 | 核对远端查询失败 | query_failed，十分钟重试，不报告 matched |
 | 数据库失效 | 明确失败退出；重启将中断写入转 UNKNOWN 核实 |
 
@@ -34,15 +36,15 @@
 
 ## 6. 必需测试
 
-覆盖重试冻结金额／汇率／时间／marker／账户、分类错误明确保留、UNKNOWN 不分类；同版本预检异常关闭和其他版本不误关；日期差异与结算组合；闲置零读取和报告 mtime 不变；新月报／审计触发、迟提交较小 ID、每小时远端变化、十分钟查询重试；真实 PostgreSQL 断连后重启无重复写入；邮件头及正文分别失败后恢复、银行未知／转发、游标连续性。
+覆盖重试冻结金额／汇率／时间／marker／账户、分类错误明确保留、UNKNOWN 不分类；同版本预检异常关闭和其他版本不误关；日期差异与结算组合；闲置零读取和报告 mtime 不变；新月报／完整输入变化触发、候选并发新增及旧轮晚到拒绝、每小时远端变化、十分钟查询重试；真实 PostgreSQL 断连后重启无重复写入；邮件头及正文分别失败后恢复、银行未知／转发、游标连续性。
 
 ## 7. 错误与正确做法
 
-错误：缓存整个决定永不刷新分类；每 30 秒全量核对；只记录最大审计 ID；连接坏了仍循环等待；从邮件头判断失败直接丢 UID。
+错误：缓存整个决定永不刷新分类；每 30 秒全量核对；以审计计数代替真实输入；连接坏了仍循环等待；从邮件头判断失败直接丢 UID。
 
 正确：显式重试只刷新分类；持久变化信号配合周期历史复核；连接失效退出重新获锁；先持久下载结果再推进检查点。
 
-反向核对 `report_key:daily:transaction_id` 从查询失败恢复为 `awaiting_statement` 或 `import_pending` 时，核对项更新与对应 `reconciliation` 异常解除须同事务；不能关闭其他报告或其他异常类型。目标仍缺失继续保留异常，后续故障可重新打开。
+核对以 `check_direction`、`statement_row_key`、`bank_transaction_id` 明确方向和对象，不构造 daily: 伪行键。银行匹配与远端状态独立，例如 matched/query_failed 可以同时存在；查询失败清空本轮 actual 与观察时间。反向缺失随后匹配时，过期反向结果在完整发布事务退出，issues 聚合自然消失；当前仍有问题的对象不能被统一关闭。
 
 ## 限定验收批次
 
@@ -50,6 +52,12 @@
 
 写入前的 `verify_unknown` 保持只读核实既有未决结果，可确认范围外历史结果，但不能产生范围外 POST。测试必须覆盖无匹配、空集合、失败／拒绝／UNKNOWN，以及范围内旧结算与范围外队列不动。该接口供明确范围的验收调用，未新增 CLI 或配置项。
 
-批量采集仅分页读取 pending/failed（每页50），不重读 done/ignored。每轮页游标即使失败也前进，防止一个失败批次饿死后续邮件；下一次采集从未完成位置重试。合法部分返回只标记缺失 UID 失败，不能把缺失当非银行忽略。真实首次扫描约五千条记录促成此优化，减少逐封 EXAMINE/FETCH 网络往返。
+批量采集仅分页读取 pending/failed（每页50），不重读 collected/skipped。每轮页游标即使失败也前进，防止一个失败批次饿死后续邮件；下一次采集从未完成位置重试。合法部分返回只标记缺失 UID 失败，不能把缺失当非银行忽略。真实首次扫描约五千条记录促成此优化，减少逐封 EXAMINE/FETCH 网络往返。
 
-UID 登记使用一次参数化 JSONB INSERT SELECT，与扫描游标同事务；非银行条目每批统一更新 downloads 与匹配的 download_failed 异常，同一事务内完成。不得回到逐 UID 数据库往返；批量事务失败时全部回滚且保留重试资格。
+UID 登记使用一次参数化 JSONB INSERT SELECT，与扫描游标同事务；非银行条目每批统一更新 email_source_item 的 skipped/skip_reason，清除过期采集错误，同一事务内完成。不得回到逐 UID 数据库往返；批量事务失败时全部回滚且保留重试资格。
+
+## 空库启动与重复候选
+
+`classify_pending` 先按当前完整来源 marker 走既有远端恢复；普通重复候选仍依据账户、金额、类型、业务日期和商户判定。远端备注出现另一个 `ebki-` 文本（包括未知格式或旧格式）不能证明它属于其他来源。只有 `bank_transactions.ledger_transaction_id` 已明确关联给另一笔本地交易时，才能从重复候选中排除该远端 ID；查询在决定短事务内参数化执行。未知来源仍产生 `duplicate_candidates` 等待显式处理，不自动映射旧ID、不自动关联或创建。
+
+正常：当前marker回读恢复，不发新增；基础：已关联其他本地来源的同值笔不阻塞真实新交易；错误：清库后仅凭备注含其他ebki-便跳过查重，重复写旧账。回归覆盖未知新/旧/无标记、只有其他本地marker但未建立远端关联、混合已关联与未知候选以及业务字段不匹配。

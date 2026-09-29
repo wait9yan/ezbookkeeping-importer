@@ -1,3 +1,4 @@
+from ezbookkeeping_importer.application.maintenance import status, issues
 from ezbookkeeping_importer.adapters.evidence_store import EvidenceStore
 from ezbookkeeping_importer.application.collect import collect
 from ezbookkeeping_importer.application.ports import HEADER_BATCH_SIZE
@@ -22,7 +23,7 @@ class BatchMail(pipeline.Mail):
         self.batches.append((folder, uids))
         for uid in uids:
             assert self.observer.one(
-                "SELECT id FROM downloads WHERE folder=%s AND validity=%s AND uid=%s",
+                "SELECT id FROM email_source_item WHERE folder=%s AND uid_validity=%s AND uid=%s",
                 (folder, self.data[folder][0], uid),
             )
         if uids[0] in self.fail_batch_starts:
@@ -46,8 +47,10 @@ def test_pending_locations_are_paged_in_batches_without_rereading_finished_rows(
     collect(store, mail, evidence, settings)
     assert [len(uids) for _, uids in mail.batches] == [HEADER_BATCH_SIZE, HEADER_BATCH_SIZE, 5]
     assert mail.fetches == [("INBOX", 51)]
-    assert store.one("SELECT count(*) AS n FROM downloads WHERE status='ignored'")["n"] == 104
-    assert store.one("SELECT historical_complete FROM cursors")["historical_complete"] is True
+    assert (
+        store.one("SELECT count(*) AS n FROM email_source_item WHERE status='skipped'")["n"] == 104
+    )
+    assert status(store)["email_sync_checkpoint"][0]["historical_complete"] is True
     collect(store, mail, evidence, settings)
     assert len(mail.batches) == 3
     assert mail.fetches == [("INBOX", 51)]
@@ -65,15 +68,17 @@ def test_failed_batch_does_not_starve_later_batches_and_retry_skips_completed_ro
     evidence = EvidenceStore(tmp_path / "evidence")
     collect(store, mail, evidence, settings)
     assert [uids[0] for _, uids in mail.batches] == [1, 51, 101]
-    assert store.one("SELECT count(*) AS n FROM downloads WHERE status='failed'")["n"] == 50
-    assert store.one("SELECT count(*) AS n FROM downloads WHERE status='ignored'")["n"] == 52
-    assert store.one("SELECT historical_complete FROM cursors")["historical_complete"] is False
+    assert store.one("SELECT count(*) AS n FROM email_source_item WHERE status='failed'")["n"] == 50
+    assert (
+        store.one("SELECT count(*) AS n FROM email_source_item WHERE status='skipped'")["n"] == 52
+    )
+    assert status(store)["email_sync_checkpoint"][0]["historical_complete"] is False
     mail.fail_batch_starts.clear()
     mail.batches.clear()
     collect(store, mail, evidence, settings)
     assert mail.batches == [("INBOX", tuple(range(1, 51)))]
-    assert store.one("SELECT count(*) AS n FROM issues WHERE NOT resolved")["n"] == 0
-    assert store.one("SELECT historical_complete FROM cursors")["historical_complete"] is True
+    assert not [i for i in issues(store) if i["code"] == "download_failed"]
+    assert status(store)["email_sync_checkpoint"][0]["historical_complete"] is True
 
 
 def test_missing_uid_stays_failed_while_valid_partial_headers_are_processed(
@@ -86,17 +91,19 @@ def test_missing_uid_stays_failed_while_valid_partial_headers_are_processed(
     mail.omissions.add(2)
     evidence = EvidenceStore(tmp_path / "evidence")
     collect(store, mail, evidence, settings)
-    states = {row["uid"]: row["status"] for row in store.all("SELECT uid,status FROM downloads")}
-    assert states == {1: "ignored", 2: "failed", 3: "done"}
+    states = {
+        row["uid"]: row["status"] for row in store.all("SELECT uid,status FROM email_source_item")
+    }
+    assert states == {1: "skipped", 2: "failed", 3: "collected"}
     assert mail.fetches == [("INBOX", 3)]
-    issue = store.one("SELECT * FROM issues WHERE code='download_failed'")
-    assert issue["data"] == {"error_type": "MissingHeader", "stage": "headers_batch"}
+    issue = next(i for i in issues(store) if i["code"] == "download_failed")
+    assert issue["entity_type"] == "email_source_item" and issue["detail"]
     mail.omissions.clear()
     mail.batches.clear()
     collect(store, mail, evidence, settings)
     assert mail.batches == [("INBOX", (2,))]
     assert mail.fetches == [("INBOX", 3), ("INBOX", 2)]
-    assert store.one("SELECT count(*) AS n FROM issues WHERE NOT resolved")["n"] == 0
+    assert not [i for i in issues(store) if i["code"] == "download_failed"]
 
 
 def test_non_bank_batch_uses_two_updates_and_one_bulk_registration(
@@ -104,7 +111,9 @@ def test_non_bank_batch_uses_two_updates_and_one_bulk_registration(
 ):
     store = database.store
     ordinary = raw_message("friend@example.test", "ordinary mail")
-    mail = BatchMail(database.connect(), {"INBOX": ("valid", dict.fromkeys(range(1, 51), ordinary))})
+    mail = BatchMail(
+        database.connect(), {"INBOX": ("valid", dict.fromkeys(range(1, 51), ordinary))}
+    )
     statements = []
     execute = store.execute
 
@@ -114,14 +123,15 @@ def test_non_bank_batch_uses_two_updates_and_one_bulk_registration(
 
     monkeypatch.setattr(store, "execute", record)
     collect(store, mail, EvidenceStore(tmp_path / "evidence"), settings)
-    assert len([sql for sql in statements if "INSERT INTO downloads" in sql]) == 1
-    assert len([sql for sql in statements if "UPDATE downloads" in sql]) == 1
-    assert len([sql for sql in statements if "code='download_failed'" in sql]) == 1
-    assert store.one("SELECT count(*) AS n FROM downloads WHERE status='ignored'")["n"] == 50
+    assert len([sql for sql in statements if "INSERT INTO email_source_item" in sql]) == 1
+    assert len([sql for sql in statements if "UPDATE email_source_item" in sql]) == 1
+    assert (
+        store.one("SELECT count(*) AS n FROM email_source_item WHERE status='skipped'")["n"] == 50
+    )
     assert mail.fetches == []
     # A repeated location snapshot is idempotent and never resets completed states.
     collect(store, mail, EvidenceStore(tmp_path / "evidence"), settings)
-    assert store.one("SELECT count(*) AS n FROM downloads")["n"] == 50
+    assert store.one("SELECT count(*) AS n FROM email_source_item")["n"] == 50
     assert len(mail.batches) == 1
 
 
@@ -137,19 +147,23 @@ def test_batch_ignore_rolls_back_downloads_when_issue_update_fails(
     execute = store.execute
 
     def fail(sql, params=()):
-        if "code='download_failed'" in sql:
+        if "UPDATE email_source_item" in sql:
             raise RuntimeError("synthetic database write failure")
         return execute(sql, params)
 
     monkeypatch.setattr(store, "execute", fail)
     with pytest.raises(RuntimeError, match="synthetic database"):
         collect(store, mail, evidence, settings)
-    assert {row["status"] for row in store.all("SELECT status FROM downloads")} == {"pending"}
-    assert store.one("SELECT historical_complete FROM cursors")["historical_complete"] is False
+    assert {row["status"] for row in store.all("SELECT status FROM email_source_item")} == {
+        "pending"
+    }
+    assert status(store)["email_sync_checkpoint"][0]["historical_complete"] is False
     monkeypatch.setattr(store, "execute", execute)
     collect(store, mail, evidence, settings)
-    assert {row["status"] for row in store.all("SELECT status FROM downloads")} == {"ignored"}
-    assert store.one("SELECT historical_complete FROM cursors")["historical_complete"] is True
+    assert {row["status"] for row in store.all("SELECT status FROM email_source_item")} == {
+        "skipped"
+    }
+    assert status(store)["email_sync_checkpoint"][0]["historical_complete"] is True
 
 
 def test_bulk_registration_failure_rolls_back_cursor_and_retries(
@@ -165,16 +179,16 @@ def test_bulk_registration_failure_rolls_back_cursor_and_retries(
 
     def fail(sql, params=()):
         result = execute(sql, params)
-        if "INSERT INTO downloads" in sql:
+        if "INSERT INTO email_source_item" in sql:
             raise RuntimeError("synthetic registration failure")
         return result
 
     monkeypatch.setattr(store, "execute", fail)
     with pytest.raises(RuntimeError, match="synthetic registration"):
         collect(store, mail, evidence, settings)
-    assert store.one("SELECT count(*) AS n FROM cursors")["n"] == 0
-    assert store.one("SELECT count(*) AS n FROM downloads")["n"] == 0
+    assert store.one("SELECT count(*) AS n FROM email_sync_checkpoint")["n"] == 0
+    assert store.one("SELECT count(*) AS n FROM email_source_item")["n"] == 0
     assert mail.batches == []
     monkeypatch.setattr(store, "execute", execute)
     collect(store, mail, evidence, settings)
-    assert store.one("SELECT count(*) AS n FROM downloads WHERE status='ignored'")["n"] == 2
+    assert store.one("SELECT count(*) AS n FROM email_source_item WHERE status='skipped'")["n"] == 2

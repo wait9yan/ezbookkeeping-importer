@@ -65,7 +65,7 @@ def match_account(accounts: list[dict], reference: str | None, currency: str) ->
 
 
 def decision_currency(transaction: dict) -> str:
-    decision = transaction.get("decision") or {}
+    decision = transaction.get("import_decision") or {}
     currency = decision.get("target_currency")
     if currency is not None:
         if not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency):
@@ -79,10 +79,10 @@ def decision_currency(transaction: dict) -> str:
 
 
 def legacy_cny_estimate(transaction: dict) -> bool:
-    decision = transaction.get("decision") or {}
+    decision = transaction.get("import_decision") or {}
     return (
         bool(decision.get("rate_snapshot"))
         and decision_currency(transaction) == "CNY"
-        and transaction["facts"]["event_type"] == "expense"
-        and transaction["facts"]["original_currency"] != "CNY"
+        and transaction["event_type"] == "expense"
+        and transaction["original_currency"] != "CNY"
     )
