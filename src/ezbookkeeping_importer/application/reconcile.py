@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import logging
+import time
 import os
 import re
 from collections import Counter, defaultdict
@@ -10,10 +12,11 @@ from decimal import Decimal
 from pathlib import Path
 
 from ..domain.accounts import decision_currency, legacy_cny_estimate, match_account, recordable
-from ..domain.errors import Conflict, ImporterError
+from ..domain.errors import Conflict, ImporterError, LogPersistenceError
 from ..domain.money import cents
 from .records import source_row
 from .ports import Ledger, Store
+from .events import emit, failure_fields
 
 HISTORY_RECHECK_INTERVAL = timedelta(hours=1)
 QUERY_RETRY_INTERVAL = timedelta(minutes=10)
@@ -128,6 +131,8 @@ def compare_ledger(
     try:
         current = ledger.get(transaction["ledger_transaction_id"])
         accounts = ledger.accounts() if current else []
+    except LogPersistenceError:
+        raise
     except Exception as exc:
         item.update(ledger_check_status="query_failed", last_error=type(exc).__name__)
         return None, None
@@ -209,7 +214,9 @@ def settlement_intent(
     account_match = decision.get("account_match")
     if is_currency:
         try:
-            account_id, account_match = match_account(accounts, transaction["card_reference"], "CNY")
+            account_id, account_match = match_account(
+                accounts, transaction["card_reference"], "CNY"
+            )
         except ImporterError as exc:
             item["ledger_check_status"] = "mismatched"
             item["details"]["settlement_error"] = str(exc)
@@ -361,6 +368,7 @@ def publish(
                 WHERE id=%s""",
                 (posted, amount, currency, tid),
             )
+        queued_counts: dict[str, int] = {}
         for intent in intents:
             active = store.one(
                 "SELECT id FROM background_task WHERE bank_transaction_id=%s AND status IN ('queued','dispatching','unknown')",
@@ -368,7 +376,7 @@ def publish(
             )
             if active:
                 continue
-            store.execute(
+            inserted = store.execute(
                 """INSERT INTO background_task(bank_transaction_id,task_type,decision_version,operation_key,ledger_transaction_id,payload)
                 VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT(operation_key) DO NOTHING""",
                 tuple(
@@ -383,6 +391,10 @@ def publish(
                     )
                 ),
             )
+            if inserted.rowcount:
+                queued_counts[intent["task_type"]] = (
+                    queued_counts.get(intent["task_type"], 0) + inserted.rowcount
+                )
         succeeded = all(item["ledger_check_status"] != "query_failed" for item in results)
         # Supplementing absent bank facts is part of this publication, so freeze the
         # resulting input to avoid an immediate redundant reconciliation cycle.
@@ -400,6 +412,8 @@ def publish(
                 report["report_key"],
             ),
         )
+
+    return queued_counts
 
 
 def write_report(store: Store, report_key: str, report_dir: Path):
@@ -434,13 +448,30 @@ def run_reports(
         ):
             continue
         ran = True
+        started = time.monotonic()
+        trigger = (
+            "input_changed"
+            if report["reconciliation_input_fingerprint"] != fingerprint
+            else "retry"
+            if report["reconciliation_last_error"]
+            or report["reconciliation_queries_succeeded"] is False
+            else "scheduled"
+        )
+        emit(
+            "reconciliation_started",
+            report_key=report["report_key"],
+            version=report["reconciliation_version"],
+            trigger=trigger,
+        )
         try:
             results, intents, supplements = compute_results(ledger, report, transactions, now)
-            publish(store, report, fingerprint, results, intents, supplements, now)
+            queued_counts = publish(store, report, fingerprint, results, intents, supplements, now)
+        except LogPersistenceError:
+            raise
         except Exception as exc:
             with store.transaction():
                 # A late old attempt may not overwrite a newer publication's summary.
-                store.execute(
+                changed = store.execute(
                     """UPDATE bank_report SET reconciliation_last_attempt_at=%s,
                     reconciliation_next_check_at=%s,reconciliation_input_fingerprint=%s,
                     reconciliation_last_error=%s,reconciliation_queries_succeeded=false
@@ -454,13 +485,67 @@ def run_reports(
                         report["reconciliation_version"],
                     ),
                 )
+            emit(
+                "reconciliation_stale" if isinstance(exc, Conflict) else "reconciliation_failed",
+                level=logging.WARNING if isinstance(exc, Conflict) else logging.ERROR,
+                report_key=report["report_key"],
+                retry_scheduled=bool(changed.rowcount),
+                next_action=(
+                    "newer_publication_retained"
+                    if not changed.rowcount
+                    else "recompute"
+                    if isinstance(exc, Conflict)
+                    else "retry_scheduled"
+                ),
+                **failure_fields(exc, "reconciliation_failed", "reconciliation"),
+            )
             queries_succeeded = False
             continue
         queries_succeeded = queries_succeeded and all(
             item["ledger_check_status"] != "query_failed" for item in results
         )
+        failed_count = sum(item["ledger_check_status"] == "query_failed" for item in results)
+        emit(
+            "reconciliation_published",
+            report_key=report["report_key"],
+            result_count=len(results),
+            match_counts=dict(Counter(item["match_status"] for item in results)),
+            ledger_check_counts=dict(Counter(item["ledger_check_status"] for item in results)),
+            settlement_queued_count=sum(queued_counts.values()),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            next_check_at=(
+                now + (QUERY_RETRY_INTERVAL if failed_count else HISTORY_RECHECK_INTERVAL)
+            ).isoformat(),
+        )
+        if queued_counts:
+            emit("write_tasks_queued", counts=queued_counts, report_key=report["report_key"])
+        if failed_count:
+            emit(
+                "reconciliation_queries_failed",
+                level=logging.WARNING,
+                report_key=report["report_key"],
+                failed_count=failed_count,
+            )
         # File errors propagate after commit; callers must not mistake them for rollback.
-        write_report(store, report["report_key"], report_dir)
+        try:
+            write_report(store, report["report_key"], report_dir)
+        except LogPersistenceError:
+            raise
+        except Exception as exc:
+            emit(
+                "report_export_failed",
+                level=logging.ERROR,
+                report_key=report["report_key"],
+                publication_committed=True,
+                **failure_fields(exc, "report_export_failed", "report_export"),
+            )
+            raise
+        emit(
+            "report_exported",
+            level=logging.DEBUG,
+            report_key=report["report_key"],
+            publication_committed=True,
+        )
     return ran, queries_succeeded
 
 

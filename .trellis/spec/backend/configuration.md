@@ -17,7 +17,7 @@
 | 命令 | 能力要求 |
 | --- | --- |
 | migrate | 数据库与显式数据库初始化能力；仅缺库时经同实例维护库创建目标 |
-| status、issues、sync | 数据库；不构造不使用的外部客户端和文件目录 |
+| status、issues、sync、console | 数据库；不构造不使用的外部客户端和文件目录；console只读取日志路径，各业务命令独立组装依赖 |
 | resolve 本地决定 | 数据库 |
 | resolve link、带 account-id 的账户修正、restore-audit | 数据库与账本 |
 | worker | 数据库、账本、IMAP、流水线与存储；AI 模式额外要求 AI 服务 |
@@ -48,3 +48,7 @@ worker 默认自动写入通过来源、分类、账户及查重校验的任务�
 IMAP 为唯一正式采集渠道，QQ 仅为服务商与专用认证策略；删除 import-eml 命令及其能力分支，原件文件格式仍为 .eml。首次常规同步全量，后续 UID 增量，跨日按 mail.rescan_days 回扫（严格非负整数，默认7，0禁用）。UIDVALIDITY变化重新全量，有界手工补扫不改变常规游标。
 
 source_policy 与 trusted_authserv_id 已删除，旧键明确迁移报错。来源认证按 mail.host 自动选择已实现的邮箱适配；当前内置 imap.qq.com，未知主机不继承 QQ 信任。人工 accept-source 仅用于具体来源项的异常处理，记录理由和时间，不改写 requires_acceptance 认证结论；同一业务来源下其他可信来源可驱动原件继续处理。
+
+## 日志级别与控制台
+
+`EBKI_LOG_LEVEL` 对应 Settings.log_level，默认INFO，接受DEBUG/INFO/WARNING/ERROR/CRITICAL，非法值明确配置错误。控制台入口只装配交互环境；status/issues/sync仍仅需数据库，resolve按现有动作决定是否需要账本，不因打开控制台要求邮箱或模型凭据。控制台命令复用同一能力判定，不能复制一套依赖表。

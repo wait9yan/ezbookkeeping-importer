@@ -68,6 +68,7 @@ class Settings(StrictModel):
     evidence_dir: Path = Path("data/email")
     report_dir: Path = Path("data/reports")
     log_dir: Path = Path("data/logs")
+    log_level: str = "INFO"
     log_max_bytes: int = Field(default=10_485_760, gt=0)
     log_backups: int = Field(default=5, ge=1)
     repayments: tuple[RepaymentMapping, ...] = ()
@@ -77,6 +78,16 @@ class Settings(StrictModel):
     ai_model: str | None = None
     ai_token: SecretStr = SecretStr("")
     ai_timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+
+    @field_validator("log_level")
+    @classmethod
+    def valid_log_level(cls, value: str) -> str:
+        value = value.upper()
+        if value not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise PydanticCustomError(
+                "config_log_level", "must be DEBUG, INFO, WARNING, ERROR or CRITICAL"
+            )
+        return value
 
     @field_validator("ledger_url", "ai_url")
     @classmethod
@@ -141,6 +152,7 @@ ENV_FIELDS = {
     "evidence_dir": "EBKI_EVIDENCE_DIR",
     "report_dir": "EBKI_REPORT_DIR",
     "log_dir": "EBKI_LOG_DIR",
+    "log_level": "EBKI_LOG_LEVEL",
     "log_max_bytes": "EBKI_LOG_MAX_BYTES",
     "log_backups": "EBKI_LOG_BACKUPS",
 }
@@ -154,6 +166,8 @@ def command_capabilities(
     action: str | None = None,
     account_id: str | None = None,
 ) -> frozenset[str]:
+    if command == "console":
+        return frozenset()
     capabilities = {"database"}
     if command in {"worker", "doctor"}:
         capabilities.update({"ledger", "mail"})
@@ -178,9 +192,9 @@ def validate_command(
     capabilities = command_capabilities(
         command, settings.classification_mode, action=action, account_id=account_id
     )
-    required: dict[str, str | None] = {
-        "EBKI_DATABASE_URL": settings.database_url.get_secret_value()
-    }
+    required: dict[str, str | None] = {}
+    if "database" in capabilities:
+        required["EBKI_DATABASE_URL"] = settings.database_url.get_secret_value()
     if "ledger" in capabilities:
         required.update(
             {

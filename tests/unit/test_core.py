@@ -50,7 +50,7 @@ def test_source_requires_delivery_context():
 
 
 def test_logs_persist_and_rotate(tmp_path, capsys):
-    settings = SimpleNamespace(log_dir=tmp_path, log_max_bytes=150, log_backups=2)
+    settings = SimpleNamespace(log_dir=tmp_path, log_max_bytes=150, log_backups=2, log_level="INFO")
     logger = configure_logging(settings)
     for _ in range(10):
         logger.info(

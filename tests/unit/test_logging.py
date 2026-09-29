@@ -10,7 +10,7 @@ from ezbookkeeping_importer.adapters.logging import configure_logging
 
 
 def settings(path, size=10000):
-    return SimpleNamespace(log_dir=path, log_max_bytes=size, log_backups=2)
+    return SimpleNamespace(log_dir=path, log_max_bytes=size, log_backups=2, log_level="INFO")
 
 
 def close_logger(logger):
@@ -23,11 +23,11 @@ def test_file_console_and_restart_append(tmp_path, capsys):
     configuration = settings(tmp_path)
     logger = configure_logging(configuration)
     try:
-        logger.info("first_event", extra={"job_id": 12, "password": "test-secret"})
+        logger.info("first_event", extra={"task_id": 12, "password": "test-secret"})
         console = json.loads(capsys.readouterr().out)
         first = json.loads((tmp_path / "worker.jsonl").read_text())
         assert console["event"] == first["event"] == "first_event"
-        assert console["job_id"] == first["job_id"] == 12
+        assert console["task_id"] == first["task_id"] == 12
         assert "test-secret" not in json.dumps([console, first])
         logger = configure_logging(configuration)
         logger.info("after_restart")
@@ -43,7 +43,7 @@ def test_rotation_leaves_other_evidence_untouched(tmp_path, capsys):
     logger = configure_logging(settings(tmp_path, size=250))
     try:
         for number in range(20):
-            logger.info("event_" + str(number), extra={"job_id": number})
+            logger.info("event_" + str(number), extra={"task_id": number})
         assert (tmp_path / "worker.jsonl.1").is_file()
         assert (tmp_path / "worker.jsonl.2").is_file()
         assert not (tmp_path / "worker.jsonl.3").exists()
@@ -77,3 +77,18 @@ def test_invalid_log_directory_fails(tmp_path):
     path.write_text("occupied")
     with pytest.raises(FileExistsError):
         configure_logging(settings(path))
+
+
+def test_tty_worker_keeps_timestamp_and_level_without_losing_chinese_title(tmp_path, monkeypatch, capsys):
+    import sys
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    logger = configure_logging(settings(tmp_path))
+    try:
+        logger.warning("worker_stop_requested", extra={"reason": "SIGTERM"})
+        rendered = capsys.readouterr().out
+        stored = json.loads((tmp_path / "worker.jsonl").read_text())
+        assert stored["time"][:10] in rendered
+        assert "WARNING" in rendered and "已收到停止请求" in rendered
+    finally:
+        close_logger(logger)

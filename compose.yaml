@@ -24,6 +24,7 @@ services:
       EBKI_EVIDENCE_DIR: "${EBKI_EVIDENCE_DIR-/app/data/email}"
       EBKI_REPORT_DIR: "${EBKI_REPORT_DIR-/app/data/reports}"
       EBKI_LOG_DIR: "${EBKI_LOG_DIR-/app/data/logs}"
+      EBKI_LOG_LEVEL: "${EBKI_LOG_LEVEL-INFO}"
       EBKI_LOG_MAX_BYTES: "${EBKI_LOG_MAX_BYTES-10485760}"
       EBKI_LOG_BACKUPS: "${EBKI_LOG_BACKUPS-5}"
     volumes:

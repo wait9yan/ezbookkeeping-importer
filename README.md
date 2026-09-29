@@ -61,13 +61,14 @@ uv run --env-file .env ebki --config config.toml worker
 | `EBKI_IMAP_TIMEOUT_SECONDS` | IMAP 超时，默认 30 秒 |
 | `EBKI_EVIDENCE_DIR`、`EBKI_REPORT_DIR`、`EBKI_LOG_DIR` | 本地默认 `data/email`、`data/reports`、`data/logs`；相对当前工作目录 |
 | `EBKI_LOG_MAX_BYTES`、`EBKI_LOG_BACKUPS` | 默认 10 MiB、5 个归档 |
+| `EBKI_LOG_LEVEL` | 默认 `INFO`；可选 `DEBUG/INFO/WARNING/ERROR/CRITICAL` |
 | `EBKI_DOCKER_NETWORK`、`EBKI_UID`、`EBKI_GID` | 仅供 Compose 使用的网络与容器用户，本地应用不读取 |
 
 端口、超时和轮转数值在使用前校验。必需项缺失时列出变量名，不回显输入秘密。按命令检查依赖：
 
 | 命令 | 必需服务配置 |
 | --- | --- |
-| `migrate/status/issues/sync` | 数据库；不需要配置外部服务 |
+| `migrate/status/issues/sync/console` | 数据库；不需要配置外部服务 |
 | `resolve` 的本地接纳、忽略、普通重试、确认新建 | 数据库；决定实际执行仍交后台 |
 | `resolve --action link`、`resolve --account-id ...`、`restore-audit` | 数据库与账本 |
 | `worker`、`doctor` | 数据库、账本、邮箱；`classification_mode="ai"` 时额外要求模型地址、名称及 Key |
@@ -156,6 +157,24 @@ docker compose run --rm importer resolve bank_transactions AbCdEfGh1234_-XY --ve
 正式邮件入口只有 IMAP，不提供 `import-eml` 命令；原始证据仍保存为 `.eml`。`Fw:`、`Fwd:`、`转发：` 前缀的已知银行主题也会保存原件并尝试解析，原始主题保留；转发邮件须有可信的来源项或人工接纳，不能因转发者通过认证就自动入账。
 
 数据库连接断开后，worker 会立即以失败退出，避免继续持有失效运行时。Compose 的 `restart: unless-stopped` 会重启进程并重新获取排他锁，未完成写入先进入 UNKNOWN 核实；本地直接运行时需重新执行 worker 命令。
+
+## 日志与交互控制台
+
+worker记录采集、解析、分类、写入、核对及恢复事件。正常进度最多每5秒一次，阶段开始/结束和错误立即输出；空闲轮询保持安静，逐条正常细节通过 `EBKI_LOG_LEVEL=DEBUG` 查看。JSONL文件保留结构化事件；交互终端用中文标题显示，非交互worker标准输出保持JSON，适合Docker日志收集。
+
+`ebki console` 是独立控制台，在同一终端中显示已有worker日志并接受命令。它不会启动或停止worker，也不执行采集和账本写入流水线。运行方式：
+
+```sh
+uv run --env-file .env ebki --config config.toml console
+# 或以独立交互容器打开
+docker compose run --rm importer console
+```
+
+支持 `help`、`status`、`issues`、`sync`、`resolve`、`quit`；业务参数与单次CLI相同，支持Tab补全和本次会话的命令历史。控制台从当前文件末尾开始显示后续新事件；日志文件尚未出现时会明确提示并等待。`Ctrl+C` 清除当前输入；`quit` 退出控制台，有在途命令时先等待已接受的命令完成。命令执行期间日志仍可显示，重复提交业务命令会明确提示当前忙。没有交互终端时请使用普通CLI。
+
+`sync` 反馈“已排队”或“已有请求已合并”，不表示采集完成。`resolve` 反馈处理决定保存或用例结果，不代表账本已写入。日志中的“采集完成”“写入尝试已登记”“写入已核实”“既有关联已恢复”分别对应不同阶段；UNKNOWN不会因为显示了日志而重新发送。核对结果发布与报告文件导出也分别记录。
+
+日志文件仅由worker写入和轮转，控制台只读尾随；状态与问题仍以数据库为准。修改级别需让worker使用新的环境配置，控制台不能恢复此前未被记录的DEBUG事件。
 
 ## 持久化、备份与恢复
 

@@ -28,3 +28,7 @@ class DatabaseDiagnosticError(ImporterError):
         label = {"connect": "连接", "initialize": "数据库初始化", "migrate": "迁移"}[stage]
         state = f", SQLSTATE={sqlstate}" if sqlstate else ""
         super().__init__(f"PostgreSQL {label}失败 [{code}{state}]：{reason}")
+
+
+class LogPersistenceError(OSError):
+    """运行日志失败；必须穿过业务异常处理边界，不改变已提交业务状态。"""

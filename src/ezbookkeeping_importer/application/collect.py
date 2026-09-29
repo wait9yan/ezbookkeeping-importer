@@ -1,6 +1,8 @@
 """扫描、下载和解析各有独立检查点；网络失败不能吞掉 UID。"""
 
 import re
+import logging
+import time
 import uuid
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -9,9 +11,10 @@ from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr, parsedate_to_datetime
 
-from ..domain.errors import ImporterError
+from ..domain.errors import ImporterError, LogPersistenceError
 from ..domain.mail import bank_candidate, normalize_subject
 from .ports import HEADER_BATCH_SIZE, Mail, Store
+from .events import emit, Progress, failure_fields
 
 
 def validate_scan_range(since: date | None, until: date | None):
@@ -296,6 +299,28 @@ def _process_candidate(store: Store, mail: Mail, evidence, settings, folder: str
     ingest(store, evidence, raw, settings, task["id"])
 
 
+def _collection_batch_progress(store: Store, progress: Progress, batch: list[dict]):
+    rows = store.all(
+        """SELECT status,source_status,accepted_at IS NOT NULL AS accepted,count(*) AS count
+        FROM email_source_item WHERE id IN (SELECT value::bigint FROM jsonb_array_elements_text(%s))
+        GROUP BY status,source_status,accepted_at IS NOT NULL""",
+        ([item["id"] for item in batch],),
+    )
+    counts = {name: 0 for name in ("collected", "skipped", "failed", "awaiting_acceptance")}
+    for row in rows:
+        if row["status"] in counts:
+            counts[row["status"]] += row["count"]
+        if (
+            row["status"] == "collected"
+            and row["source_status"] == "requires_acceptance"
+            and not row["accepted"]
+        ):
+            counts["awaiting_acceptance"] += row["count"]
+    progress.advance(
+        count=sum(counts[name] for name in ("collected", "skipped", "failed")), **counts
+    )
+
+
 def collect(
     store: Store,
     mail: Mail,
@@ -307,7 +332,32 @@ def collect(
     validate_scan_range(since, until)
     bounded = since is not None
     failed_folders = 0
-    for folder in mail.folders():
+    progress = Progress("collection", source_id=settings.mail.source_id)
+    scan_mode = "range" if bounded else "incremental"
+    emit(
+        "mail_scan_started", source_id=settings.mail.source_id, scan_mode=scan_mode, stage="folders"
+    )
+    try:
+        folders = mail.folders()
+    except LogPersistenceError:
+        raise
+    except Exception as exc:
+        emit(
+            "mail_scan_failed",
+            level=logging.ERROR,
+            source_id=settings.mail.source_id,
+            **failure_fields(exc, "folder_list_failed", "folders"),
+        )
+        raise
+    for folder in folders:
+        scan_started = time.monotonic()
+        emit(
+            "mail_scan_started",
+            source_id=settings.mail.source_id,
+            folder=folder,
+            scan_mode=scan_mode,
+            stage="scan",
+        )
         previous = store.one(
             "SELECT * FROM email_sync_checkpoint WHERE source_id=%s AND folder=%s",
             (settings.mail.source_id, folder),
@@ -329,7 +379,16 @@ def collect(
                 )
                 if previous and validity != previous["uid_validity"]:
                     validity, uids = mail.scan(folder)
-        except Exception:
+        except LogPersistenceError:
+            raise
+        except Exception as exc:
+            emit(
+                "mail_scan_failed",
+                level=logging.ERROR,
+                source_id=settings.mail.source_id,
+                folder=folder,
+                **failure_fields(exc, "folder_scan_failed", "scan"),
+            )
             # A LIST entry can be unreadable; preserve its failure without starving other folders.
             failed_folders += 1
             continue
@@ -341,6 +400,7 @@ def collect(
                 else [0]
             )
         )
+        new_source_count = 0
         with store.transaction():
             if not bounded:
                 previous = store.one(
@@ -362,13 +422,32 @@ def collect(
             # Persist candidate tasks before advancing the scan snapshot. Re-scanning UIDs also
             # covers moved messages; unique locations keep email_source_item incremental.
             if uids:
-                store.execute(
+                inserted = store.execute(
                     """INSERT INTO email_source_item(source_id,folder,uid_validity,uid)
                     SELECT %s,%s,%s,value::bigint FROM jsonb_array_elements_text(%s)
                     ON CONFLICT(source_id,folder,uid_validity,uid) DO NOTHING""",
                     (settings.mail.source_id, folder, validity, uids),
                 )
+                new_source_count = inserted.rowcount
+        emit(
+            "mail_scan_completed",
+            source_id=settings.mail.source_id,
+            folder=folder,
+            scan_mode=scan_mode,
+            returned_uid_count=len(uids),
+            new_source_count=new_source_count,
+            duration_ms=int((time.monotonic() - scan_started) * 1000),
+        )
         selected_uids = set(uids)
+        pending_total = store.one(
+            """SELECT count(*) AS count FROM email_source_item WHERE source_id=%s AND folder=%s
+            AND uid_validity=%s AND status IN ('pending','failed') AND (NOT %s OR uid IN
+            (SELECT value::bigint FROM jsonb_array_elements_text(%s)))""",
+            (settings.mail.source_id, folder, validity, bounded, uids),
+        )
+        if pending_total is None:
+            raise ImporterError("collection pending count unavailable")
+        progress.total += pending_total["count"]
         after_uid = 0
         while True:
             pending = store.all(
@@ -388,15 +467,34 @@ def collect(
                 headers_by_uid = mail.fetch_headers_batch(
                     folder, tuple(task["uid"] for task in batch)
                 )
+            except LogPersistenceError:
+                raise
             except Exception as exc:
                 for task in batch:
                     _download_failure(store, task, type(exc).__name__, "headers_batch")
+                emit(
+                    "mail_batch_failed",
+                    level=logging.ERROR,
+                    folder=folder,
+                    affected_count=len(batch),
+                    **failure_fields(exc, "headers_batch_failed", "headers_batch"),
+                )
+                _collection_batch_progress(store, progress, batch)
                 continue
             ignored_ids = []
             candidates = []
             for task in batch:
                 if task["uid"] not in headers_by_uid:
                     _download_failure(store, task, "MissingHeader", "headers_batch")
+                    emit(
+                        "mail_item_failed",
+                        level=logging.ERROR,
+                        source_item_id=task["id"],
+                        folder=folder,
+                        stage="headers_batch",
+                        error_code="missing_header",
+                        error_type="MissingHeader",
+                    )
                     continue
                 try:
                     envelope = BytesParser(policy=policy.default).parsebytes(
@@ -407,14 +505,35 @@ def collect(
                         candidates.append(task)
                     else:
                         ignored_ids.append(task["id"])
+                except LogPersistenceError:
+                    raise
                 except Exception as exc:
                     _download_failure(store, task, type(exc).__name__, "headers")
+                    emit(
+                        "mail_item_failed",
+                        level=logging.ERROR,
+                        source_item_id=task["id"],
+                        folder=folder,
+                        **failure_fields(exc, "header_parse_failed", "headers"),
+                    )
             # Database failures propagate: rollback preserves all these locations for retry.
             _ignore_email_source_item(store, ignored_ids)
             for task in candidates:
                 try:
                     _process_candidate(store, mail, evidence, settings, folder, task)
+                except LogPersistenceError:
+                    raise
                 except Exception as exc:
                     _download_failure(store, task, type(exc).__name__, "message")
+                    emit(
+                        "mail_item_failed",
+                        level=logging.ERROR,
+                        source_item_id=task["id"],
+                        folder=folder,
+                        **failure_fields(exc, "message_collection_failed", "message"),
+                    )
+            _collection_batch_progress(store, progress, batch)
+    progress.finish()
     if failed_folders:
         raise ImporterError(f"{failed_folders} mailbox folders could not be scanned; see issues")
+    return progress.summary()

@@ -1,12 +1,16 @@
 """短事务冻结请求，网络外置；UNKNOWN 永远只核实原操作。"""
 
 import re
+import logging
+import time
+from collections import Counter
 from datetime import datetime, timezone
 
-from ..domain.errors import ImporterError, LedgerRejected
+from ..domain.errors import ImporterError, LedgerRejected, LogPersistenceError
 from ..domain.accounts import decision_currency, legacy_cny_estimate
 from .classify import validate_target, validate_accounts
 from .ports import Ledger, Store
+from .events import emit, blocked, failure_fields, failure_identity
 
 WRITE_TYPES = "('create','settle_amount','settle_currency')"
 
@@ -35,11 +39,11 @@ def target_currency(job: dict, transaction: dict) -> str:
 
 
 def task_error(store: Store, job: dict, code: str, detail: str):
-    store.execute(
+    return store.execute(
         """UPDATE background_task SET error_code=%s,last_error=%s,updated_at=now()
         WHERE id=%s AND decision_version=%s AND status IN ('queued','dispatching','unknown','rejected')""",
         (code, detail, job["id"], job["decision_version"]),
-    )
+    ).rowcount
 
 
 def recover_dispatching(store: Store):
@@ -55,6 +59,15 @@ def recover_dispatching(store: Store):
         store.execute(
             "UPDATE background_task SET status='queued',updated_at=now() WHERE task_type IN ('sync','sync_range') AND status='dispatching'"
         )
+
+    if stale:
+        emit(
+            "write_interrupted_recovered",
+            level=logging.WARNING,
+            counts=dict(Counter(job["task_type"] for job in stale)),
+            next_action="verify_only",
+        )
+    return len(stale)
 
 
 def complete(store: Store, job: dict, current: dict, method: str | None = None):
@@ -136,6 +149,23 @@ def complete(store: Store, job: dict, current: dict, method: str | None = None):
             (current, job["id"], job["decision_version"]),
         )
 
+    event = {
+        "write_verified": "write_verified",
+        "existing_link": "existing_link_restored",
+        "already_applied": "settlement_already_applied",
+    }[method]
+    emit(
+        event,
+        task_id=job["id"],
+        task_type=job["task_type"],
+        transaction_id=job["bank_transaction_id"],
+        decision_version=job["decision_version"],
+        ledger_transaction_id=str(current["id"]),
+        completion_method=method,
+        **({"attempt_id": attempted["id"]} if attempted else {}),
+    )
+    return True
+
 
 def preserved_fields_match(ledger: Ledger, current: dict, payload: dict) -> bool:
     # The adapter's full modify projection is the canonical list of writable fields,
@@ -186,13 +216,27 @@ def verify_unknown(store: Store, ledger: Ledger):
                 raise ImporterError("remote settlement fields differ from frozen request")
             validate_accounts(ledger, current, target_currency(job, transaction))
             complete(store, job, current)
+        except LogPersistenceError:
+            raise
         except Exception as exc:
             with store.transaction():
-                task_error(
+                changed = task_error(
                     store,
                     job,
                     "verification_failed",
                     str(exc) if isinstance(exc, ImporterError) else type(exc).__name__,
+                )
+
+            if changed:
+                blocked(
+                    "write_verification_pending",
+                    identity=str(job["id"]),
+                    state=failure_identity(exc),
+                    task_id=job["id"],
+                    transaction_id=job["bank_transaction_id"],
+                    decision_version=job["decision_version"],
+                    next_action="verify_only",
+                    **failure_fields(exc, "verification_failed", "verification"),
                 )
 
 
@@ -218,6 +262,7 @@ def prepare_settlement(ledger: Ledger, job: dict, transaction: dict) -> tuple[di
 
 
 def record_preflight_failure(store: Store, candidate: dict, error: Exception):
+    changed = 0
     with store.transaction():
         current = store.one(
             "SELECT * FROM background_task WHERE id=%s FOR UPDATE", (candidate["id"],)
@@ -233,12 +278,24 @@ def record_preflight_failure(store: Store, candidate: dict, error: Exception):
             == candidate["decision_version"]
             == transaction["decision_version"]
         ):
-            task_error(
+            changed = task_error(
                 store,
                 current,
                 "write_preflight_failed",
                 str(error) if isinstance(error, ImporterError) else type(error).__name__,
             )
+
+    if changed:
+        blocked(
+            "write_preflight_blocked",
+            identity=str(candidate["id"]),
+            state=failure_identity(error),
+            task_id=candidate["id"],
+            transaction_id=candidate["bank_transaction_id"],
+            decision_version=candidate["decision_version"],
+            next_action="inspect_issues",
+            **failure_fields(error, "write_preflight_failed", "preflight"),
+        )
 
 
 def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str] | None = None):
@@ -259,9 +316,16 @@ def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str
                 raise ImporterError("missing transaction for write operation")
             if transaction["decision_version"] != candidate["decision_version"]:
                 with store.transaction():
-                    store.execute(
+                    cancelled = store.execute(
                         "UPDATE background_task SET status='cancelled',updated_at=now() WHERE id=%s AND status='queued' AND decision_version=%s",
                         (candidate["id"], candidate["decision_version"]),
+                    )
+                if cancelled.rowcount:
+                    emit(
+                        "write_task_cancelled",
+                        task_id=candidate["id"],
+                        transaction_id=candidate["bank_transaction_id"],
+                        reason_code="stale_decision",
                     )
                 continue
             payload = request_payload(candidate)
@@ -271,6 +335,8 @@ def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str
                     complete(store, candidate, current, "already_applied")
                     continue
             validate_target(ledger, payload, target_currency(candidate, transaction))
+        except LogPersistenceError:
+            raise
         except Exception as exc:
             record_preflight_failure(store, candidate, exc)
             continue
@@ -312,7 +378,16 @@ def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str
             )
             if not attempt:
                 raise ImporterError("attempt insert failed")
+        emit(
+            "write_attempt_registered",
+            task_id=job["id"],
+            attempt_id=attempt["id"],
+            task_type=job["task_type"],
+            transaction_id=job["bank_transaction_id"],
+            decision_version=job["decision_version"],
+        )
         job["payload"] = frozen
+        request_started = time.monotonic()
         try:
             result = (
                 ledger.create(payload) if job["task_type"] == "create" else ledger.modify(payload)
@@ -332,7 +407,17 @@ def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str
                     "UPDATE ledger_write_attempt SET outcome='rejected',error=%s,response_received_at=now() WHERE id=%s",
                     (str(exc), attempt["id"]),
                 )
+            emit(
+                "write_rejected",
+                level=logging.WARNING,
+                task_id=job["id"],
+                attempt_id=attempt["id"],
+                error_code=str(exc.code),
+                next_action="inspect_issues",
+            )
             continue
+        except LogPersistenceError:
+            raise
         except Exception as exc:
             result = None
             failure = type(exc).__name__
@@ -357,4 +442,22 @@ def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str
                     "UPDATE bank_transactions SET import_status='unknown' WHERE id=%s",
                     (transaction["id"],),
                 )
+        if result is not None:
+            emit(
+                "write_response_received",
+                level=logging.DEBUG,
+                task_id=job["id"],
+                attempt_id=attempt["id"],
+                response_status="received",
+                duration_ms=int((time.monotonic() - request_started) * 1000),
+            )
+        emit(
+            "write_result_unknown",
+            level=logging.WARNING,
+            task_id=job["id"],
+            attempt_id=attempt["id"],
+            task_type=job["task_type"],
+            error_type=failure if result is None else None,
+            next_action="verify_only",
+        )
     verify_unknown(store, ledger)

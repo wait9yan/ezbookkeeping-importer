@@ -119,6 +119,7 @@ def test_every_runtime_field_comes_from_environment(config, monkeypatch, tmp_pat
         "EBKI_EVIDENCE_DIR": str(tmp_path / "evidence"),
         "EBKI_REPORT_DIR": str(tmp_path / "reports"),
         "EBKI_LOG_DIR": str(tmp_path / "logs"),
+        "EBKI_LOG_LEVEL": "DEBUG",
         "EBKI_LOG_MAX_BYTES": "2048",
         "EBKI_LOG_BACKUPS": "3",
     }
@@ -174,6 +175,7 @@ def test_all_legacy_runtime_toml_keys_are_reported_without_values(config, monkey
         ("EBKI_IMAP_TIMEOUT_SECONDS", "0"),
         ("EBKI_LOG_MAX_BYTES", "0"),
         ("EBKI_LOG_BACKUPS", "-1"),
+        ("EBKI_LOG_LEVEL", "secret-not-level"),
         ("EBKI_LEDGER_URL", "https://user:secret@example.test"),
         ("EBKI_AI_URL", "file:///secret"),
         ("EBKI_LEDGER_URL", "https://example.test:99999/secret"),
@@ -472,3 +474,18 @@ def test_removed_source_policy_requires_migration(config, monkeypatch, field, va
     config.write_text(f'{field} = "{value}"\n' + BUSINESS)
     with pytest.raises(ConfigurationError, match=field + " -> remove"):
         load_settings(str(config))
+
+
+def test_console_opens_without_database_or_remote_credentials(config):
+    settings = load_settings(str(config), command="console")
+    assert settings.database_url.get_secret_value() == ""
+    assert settings.log_level == "INFO"
+
+
+def test_log_level_environment_is_validated_and_normalized(config, monkeypatch):
+    monkeypatch.setenv("EBKI_LOG_LEVEL", "debug")
+    assert load_settings(str(config), command="console").log_level == "DEBUG"
+    monkeypatch.setenv("EBKI_LOG_LEVEL", "SECRET_LEVEL")
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(str(config), command="console")
+    assert "EBKI_LOG_LEVEL" in str(error.value) and "SECRET_LEVEL" not in str(error.value)

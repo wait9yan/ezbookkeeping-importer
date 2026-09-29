@@ -7,7 +7,14 @@ name = "ezbookkeeping-importer"
 version = "0.1.0"
 description = "招商银行邮件导入与核对服务"
 requires-python = ">=3.12"
-dependencies = ["pydantic==2.12.5", "httpx==0.28.1", "psycopg[binary]==3.3.2", "beautifulsoup4==4.14.3"]
+dependencies = [
+    "pydantic==2.12.5",
+    "httpx==0.28.1",
+    "psycopg[binary]==3.3.2",
+    "beautifulsoup4==4.14.3",
+    "rich==15.0.0",
+    "prompt-toolkit==3.0.53",
+]
 
 [project.scripts]
 ebki = "ezbookkeeping_importer.entrypoints.cli:main"
