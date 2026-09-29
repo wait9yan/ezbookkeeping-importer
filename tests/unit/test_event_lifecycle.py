@@ -69,7 +69,7 @@ def test_signal_reports_request_before_stopped(runtime, monkeypatch):
         worker.signal, "signal", lambda number, handler: handlers.update({number: handler})
     )
 
-    def stop_cycle(*args):
+    def stop_cycle(*args, **kwargs):
         handlers[worker.signal.SIGINT](worker.signal.SIGINT, None)
         handlers[worker.signal.SIGINT](worker.signal.SIGINT, None)
         return True

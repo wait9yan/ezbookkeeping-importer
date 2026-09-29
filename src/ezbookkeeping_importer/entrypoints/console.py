@@ -1,24 +1,16 @@
-"""独立交互终端：只读 worker 日志，复用既有维护命令。"""
+"""统一运行内部的交互组件：复用既有维护命令。"""
 
 import argparse
 import asyncio
 from collections.abc import Callable
 import json
 import logging
-from pathlib import Path
 import shlex
-import sys
-from typing import TextIO, cast
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.history import InMemoryHistory
-from prompt_toolkit.patch_stdout import StdoutProxy
 from rich.console import Console
 from rich.text import Text
 
 from ..application.events import EVENT_LABELS, format_event
-from ..config import load_settings
 from ..domain.errors import ImporterError
 from . import cli
 from .log_tail import LogNotice, LogTailer
@@ -59,14 +51,14 @@ def parse_line(line: str, config_path: str):
     parser = cli.build_parser(interactive=True, parser_class=ConsoleArgumentParser)
     if words[0] == "help":
         if len(words) == 1:
-            raise CommandHelp(parser.format_help() + "\nhelp [命令] 查看帮助；quit 退出控制台。")
+            raise CommandHelp(parser.format_help() + "\nhelp [命令] 查看帮助；exit 退出控制台。")
         if len(words) != 2 or words[1] not in cli.CONSOLE_COMMANDS:
             raise CommandInputError("用法：help [status|issues|sync|resolve]")
         words = [words[1], "--help"]
-    if words[0] == "quit":
+    if words[0] == "exit":
         if len(words) != 1:
-            raise CommandInputError("用法：quit")
-        return argparse.Namespace(command="quit")
+            raise CommandInputError("用法：exit")
+        return argparse.Namespace(command="exit")
     args = cli.parse_command(parser, words)
     args.config = config_path
     return args
@@ -132,53 +124,53 @@ async def _follow(tailer: LogTailer, console: Console, minimum_level: str, stopp
 
 async def _prompt(session):
     try:
-        return await session.prompt_async("ebki> ")
-    except KeyboardInterrupt:
-        return ""
-    except EOFError:
-        return "quit"
+        return await session.prompt_async("ebki> ", handle_sigint=False)
+    except (KeyboardInterrupt, EOFError):
+        return "exit"
 
 
-async def _next_line(session, follower: asyncio.Task, active: asyncio.Task | None = None):
+async def _next_line(session, watchers, stopping: asyncio.Event, active=None):
     prompt = asyncio.create_task(_prompt(session))
+    stopped = asyncio.create_task(stopping.wait())
     try:
-        watched = {prompt, follower}
+        watched = {prompt, stopped, *watchers}
         if active is not None:
             watched.add(active)
         while True:
             done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
-            if follower in done:
-                await follower
-                raise ImporterError("日志跟随已意外停止")
+            for observer in watchers:
+                if observer in done:
+                    await observer
+                    if not stopping.is_set():
+                        raise ImporterError("运行监视已意外停止")
             if active in done:
                 await active
                 watched.remove(active)
+            if stopped in done:
+                return "exit"
             if prompt in done:
                 return await prompt
     finally:
-        if not prompt.done():
-            prompt.cancel()
-            await asyncio.gather(prompt, return_exceptions=True)
+        for task in (prompt, stopped):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(prompt, stopped, return_exceptions=True)
 
 
 async def interact(
     config_path: str,
-    log_path: Path,
-    minimum_level: str,
     session,
     console: Console,
     *,
+    stop_requested: asyncio.Event,
+    watchers=(),
     execute: Callable = cli.execute_command,
 ):
-    tailer = LogTailer(log_path)
-    stopped = asyncio.Event()
-    follower = asyncio.create_task(_follow(tailer, console, minimum_level, stopped))
     active: asyncio.Task | None = None
-    console.print("控制台已启动。输入 help 查看命令；Ctrl+C 清除输入；quit 退出控制台。")
-    console.print("显示启动后的新日志。退出时等待已接受的命令完成；退出不会停止 worker。")
+    console.print("worker 已就绪。输入 help 查看命令；exit、Ctrl+C 或 EOF 一起退出。")
     try:
-        while True:
-            line = await _next_line(session, follower, active)
+        while not stop_requested.is_set():
+            line = await _next_line(session, watchers, stop_requested, active)
             try:
                 args = parse_line(line, config_path)
             except CommandHelp as exc:
@@ -189,52 +181,19 @@ async def interact(
                 continue
             if args is None:
                 continue
-            if args.command == "quit":
+            if args.command == "exit":
                 break
             if active is not None and not active.done():
-                console.print("上一条命令仍在执行，请完成后再试；help 和 quit 仍可使用。")
+                console.print("上一条命令仍在执行，请完成后再试；help 和 exit 仍可使用。")
                 continue
             if active is not None:
                 await active
             console.print(f"正在执行 {args.command}…")
             active = asyncio.create_task(_execute(args, console, execute))
     finally:
-        try:
-            if active is not None:
-                if not active.done():
-                    console.print("正在等待已接受的命令完成，日志继续显示…")
-                await active
-        finally:
-            stopped.set()
-            try:
-                await follower
-            finally:
-                tailer.close()
-    console.print("控制台已退出。")
-
-
-async def _run(config_path: str):
-    settings = load_settings(config_path, command="console")
-    session: PromptSession[str] = PromptSession(
-        completer=WordCompleter(["help", *cli.CONSOLE_COMMANDS, "quit"]),
-        history=InMemoryHistory(),
-    )
-    # 代理在当前 event loop/AppSession 中构造；Rich 的所有输出都从这里进入。
-    with StdoutProxy(raw=True) as output:
-        console = Console(
-            file=cast(TextIO, output), force_terminal=True, markup=False, highlight=False
-        )
-        await interact(
-            config_path, settings.log_dir / "worker.jsonl", settings.log_level, session, console
-        )
-
-
-def run_console(config_path: str) -> int:
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print(
-            "console 需要交互终端；请在终端运行，或使用 ebki status/issues/sync/resolve 单次命令。",
-            file=sys.stderr,
-        )
-        return 2
-    asyncio.run(_run(config_path))
-    return 0
+        # 先请求 worker 停止，再等待已接受命令；命令线程不能被取消为假成功。
+        stop_requested.set()
+        if active is not None:
+            if not active.done():
+                console.print("正在等待已接受的命令完成，日志继续显示…")
+            await active

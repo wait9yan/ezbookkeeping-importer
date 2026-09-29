@@ -36,17 +36,19 @@ cp config.example.toml config.toml
 uv sync --frozen
 ```
 
-先填写 `.env` 的数据库连接。`migrate`、`status`、`issues` 和 `sync` 不要求账本、邮箱或模型凭据；启动 worker 前再补齐对应服务。使用以下命令显式加载本机 `.env`：
+先填写 `.env` 的数据库连接。`migrate`、`status`、`issues` 和 `sync` 不要求账本、邮箱或模型凭据；启动前再补齐对应服务。项目启动器固定使用项目目录的 `.env` 和默认 `config.toml`，日常只需：
 
 ```sh
-uv run --env-file .env ebki --config config.toml migrate
-uv run --env-file .env ebki --config config.toml doctor
-uv run --env-file .env ebki --config config.toml worker
+./run migrate   # 首次初始化
+./run doctor    # 检查配置与只读连通性
+./run           # 同时启动 worker 和交互控制台
 ```
 
-**普通 `uv run` 不会替本项目自动加载 `.env`。** 应用不再另设 dotenv 加载器，只读取进程环境；已有 shell 环境变量优先于文件中的同名值。直接执行已安装的 `ebki` 时，调用方负责注入环境。`.env` 已被忽略，不会进入源码发行包或 Docker 镜像；`.env.example` 是可分享的空值模板。
+`./run` 通过 uv 加载项目 `.env`，有参数时透传给 `ebki`；例如 `./run status`、`./run issues`。默认配置路径无需重复指定；需要其他配置时使用 `./run --config /path/to/config.toml run`。启动不会自动初始化数据库。
 
-### 服务与运行环境变量
+**普通 `uv run` 不会替本项目自动加载 `.env`。** 原始命令仍可使用 `uv run --env-file .env ebki run`；应用只读取 TOML 和进程环境，不另设 dotenv 加载器，已有 shell 环境变量优先。直接执行已安装的 `ebki` 时，调用方负责注入环境。`.env` 已被忽略，不会进入源码发行包或 Docker 镜像；`.env.example` 是可分享的空值模板。
+
+### 服务连接环境变量
 
 | 环境变量 | 用途与默认值 |
 | --- | --- |
@@ -59,19 +61,17 @@ uv run --env-file .env ebki --config config.toml worker
 | `EBKI_IMAP_HOST`、`EBKI_IMAP_PORT` | 默认 `imap.qq.com`、`993` |
 | `EBKI_IMAP_USERNAME`、`EBKI_IMAP_PASSWORD` | IMAP 登录名及凭据；QQ 使用邮箱地址和 IMAP 授权码 |
 | `EBKI_IMAP_TIMEOUT_SECONDS` | IMAP 超时，默认 30 秒 |
-| `EBKI_EVIDENCE_DIR`、`EBKI_REPORT_DIR`、`EBKI_LOG_DIR` | 本地默认 `data/email`、`data/reports`、`data/logs`；相对当前工作目录 |
-| `EBKI_LOG_MAX_BYTES`、`EBKI_LOG_BACKUPS` | 默认 10 MiB、5 个归档 |
-| `EBKI_LOG_LEVEL` | 默认 `INFO`；可选 `DEBUG/INFO/WARNING/ERROR/CRITICAL` |
-| `EBKI_DOCKER_NETWORK`、`EBKI_UID`、`EBKI_GID` | 仅供 Compose 使用的网络与容器用户，本地应用不读取 |
 
-端口、超时和轮转数值在使用前校验。必需项缺失时列出变量名，不回显输入秘密。按命令检查依赖：
+日志级别在 `config.toml` 顶层设置 `log_level = "INFO"`，支持 `DEBUG/INFO/WARNING/ERROR/CRITICAL`，修改后重启进程。目录固定为相对工作目录的 `data/email`、`data/reports`、`data/logs`；应用日志固定按 10 MiB 轮转，保留 5 个归档。
+
+端口、超时和日志级别在使用前校验。必需项缺失时列出变量名，不回显输入秘密。按命令检查依赖：
 
 | 命令 | 必需服务配置 |
 | --- | --- |
-| `migrate/status/issues/sync/console` | 数据库；不需要配置外部服务 |
+| `migrate/status/issues/sync` | 数据库；不需要配置外部服务 |
 | `resolve` 的本地接纳、忽略、普通重试、确认新建 | 数据库；决定实际执行仍交后台 |
 | `resolve --action link`、`resolve --account-id ...`、`restore-audit` | 数据库与账本 |
-| `worker`、`doctor` | 数据库、账本、邮箱；`classification_mode="ai"` 时额外要求模型地址、名称及 Key |
+| `run`、`worker`、`doctor` | 数据库、账本、邮箱；`classification_mode="ai"` 时额外要求模型地址、名称及 Key |
 
 `EBKI_AI_URL` 应填写模型服务的 API 基址，应用追加 `/chat/completions`。如果站点根地址返回 HTML 首页，即使 HTTP 200 也不能通过分类校验；应核对服务实际 API 路径（常见为 `/v1`），不要把网页地址当作 API。
 
@@ -101,27 +101,32 @@ uv run --env-file .env ebki --config config.toml worker
 
 删除普通消费的 `[[accounts]]` 配置，在 ezBookkeeping 对应账户的描述中填写银行卡号；已有决定保留冻结账户和币种，不因描述修改自动重新映射。旧账户映射会明确报告迁移提示。`repayments` 仍保留。新交易直接原币入账，旧人民币暂估的已保存任务仍可恢复和结算。
 
-将 TOML 中 `ledger_url/ai_url/ai_model`、`mail.host/port/username/timeout_seconds`、目录及日志轮转字段移到上述环境变量，并从 TOML 删除旧字段；已有四个秘密变量名保持不变。旧键不会被静默覆盖或忽略，即使同时设置了环境变量，也会报告需要迁移的键与目标变量。程序不会自动改写现有 `config.toml` 或 `.env`。
+将 TOML 中 `ledger_url/ai_url/ai_model`、`mail.host/port/username/timeout_seconds` 等服务连接字段移到上述环境变量，并从 TOML 删除旧字段；已有四个秘密变量名保持不变。旧键不会被静默覆盖或忽略，即使同时设置了环境变量，也会报告需要迁移的键与目标变量。程序不会自动改写现有 `config.toml` 或 `.env`。
+
+目录和日志轮转参数不再对外配置，请删除 TOML 中的 `evidence_dir/report_dir/log_dir/log_max_bytes/log_backups`。旧 `.env` 中的 `EBKI_EVIDENCE_DIR/EBKI_REPORT_DIR/EBKI_LOG_DIR/EBKI_LOG_MAX_BYTES/EBKI_LOG_BACKUPS/EBKI_LOG_LEVEL` 已不读取；日志级别改到 TOML 顶层。Docker 网络和用户直接通过 Docker 配置管理，删除旧 `EBKI_DOCKER_NETWORK/EBKI_UID/EBKI_GID`。使用过自定义目录的部署，切换前应停止 worker，将已有数据迁入固定目录或调整 Compose 的宿主机挂载源，容器目标路径保持 `/app/data/*`。
 
 ## 启动和维护
 
 Dockerfile 固定 Python `3.12.13`、uv `0.11.21`，使用仓库 `uv.lock` 执行 `uv sync --frozen --no-dev`。首次启动前显式迁移；worker 不代替迁移步骤。Compose 自动读取项目 `.env`，并通过 `environment` 注入与本地相同的变量；必需凭据由应用按命令检查，因此可以在尚未填写邮箱和模型凭据时运行迁移。
 
-部署时把服务地址改为已有 Docker 网络内可访问的名称，例如 `http://ezbookkeeping:8080`，不能沿用容器内的 `127.0.0.1`。设置 `EBKI_DOCKER_NETWORK`，准备挂载目录，并使用对应属主：
+部署时把服务地址改为已有 Docker 网络内可访问的名称，例如 `http://ezbookkeeping:8080`，不能沿用容器内的 `127.0.0.1`。Compose 使用已有外部网络 `bookkeeping`；实际名称不同时直接修改 `compose.yaml` 中的 `networks.bookkeeping.name`。
+
+容器默认沿用 Dockerfile 的 `10001:10001` 身份。首次部署准备挂载目录及权限：
 
 ```sh
 mkdir -p data/email data/reports data/logs
-export EBKI_UID="$(id -u)"
-export EBKI_GID="$(id -g)"
+sudo chown -R 10001:10001 data/email data/reports data/logs
 ```
 
-未设置 `EBKI_*_DIR` 时，Compose 将宿主机 `./data/*` 挂载到容器 `/app/data/*`。若覆盖目录，值必须是已准备好权限的绝对路径，Compose 将同一绝对路径挂载到容器并传给应用。Compose 不另起 PostgreSQL 服务或创建外部网络；目标库由 `migrate` 按上述权限初始化。
+如需以宿主机当前用户运行，用 `id -u` 和 `id -g` 查看 ID，在 `compose.yaml` 的 `services.importer` 下显式设置 `user: "实际UID:实际GID"`，并确保挂载目录允许该身份写入。
+
+Compose 将宿主机 `./data/*` 挂载到容器 `/app/data/*`，应用在 `/app` 工作目录下使用固定相对路径。特殊部署可调整挂载源，容器目标保持固定。Compose 不另起 PostgreSQL 服务或创建外部网络；目标库由 `migrate` 按上述权限初始化。
 
 ```sh
 docker compose build
 docker compose run --rm importer migrate
 docker compose run --rm importer doctor
-docker compose up -d importer
+docker compose up -d
 docker compose run --rm importer status
 docker compose run --rm importer issues
 ```
@@ -160,21 +165,23 @@ docker compose run --rm importer resolve bank_transactions AbCdEfGh1234_-XY --ve
 
 ## 日志与交互控制台
 
-worker记录采集、解析、分类、写入、核对及恢复事件。正常进度最多每5秒一次，阶段开始/结束和错误立即输出；空闲轮询保持安静，逐条正常细节通过 `EBKI_LOG_LEVEL=DEBUG` 查看。JSONL文件保留结构化事件；交互终端用中文标题显示，非交互worker标准输出保持JSON，适合Docker日志收集。
+worker记录采集、解析、分类、写入、核对及恢复事件。正常进度最多每5秒一次，阶段开始/结束和错误立即输出；空闲轮询保持安静，逐条正常细节通过在 `config.toml` 顶层设置 `log_level = "DEBUG"` 并重启查看。JSONL文件保留结构化事件；交互终端用中文标题显示，非交互worker标准输出保持JSON，适合Docker日志收集。
 
-`ebki console` 是独立控制台，在同一终端中显示已有worker日志并接受命令。它不会启动或停止worker，也不执行采集和账本写入流水线。运行方式：
+本地执行 `./run`，在一个终端中启动 worker、显示日志并接受命令。控制台管理本次启动的 worker，后台进程异常会立即报告；已有 worker 占用同一数据库时启动失败，不会接管已有进程。
 
 ```sh
-uv run --env-file .env ebki --config config.toml console
-# 或以独立交互容器打开
-docker compose run --rm importer console
+./run
 ```
 
-支持 `help`、`status`、`issues`、`sync`、`resolve`、`quit`；业务参数与单次CLI相同，支持Tab补全和本次会话的命令历史。控制台从当前文件末尾开始显示后续新事件；日志文件尚未出现时会明确提示并等待。`Ctrl+C` 清除当前输入；`quit` 退出控制台，有在途命令时先等待已接受的命令完成。命令执行期间日志仍可显示，重复提交业务命令会明确提示当前忙。没有交互终端时请使用普通CLI。
+支持 `help`、`status`、`issues`、`sync`、`resolve`、`exit`；业务参数与单次CLI相同，支持Tab补全和本次会话的命令历史。日志从本次启动前的位置继续显示，包含本次 worker 启动事件。
+
+输入 `exit`、按 Ctrl+C 或关闭输入（EOF）都会一起退出控制台和 worker。程序先停止接收新命令，等待已接受的维护命令和当前处理阶段结束，不再进入后续阶段；等待时仍显示日志。当前阶段可能是批量采集、分类或写入，退出可能需要数分钟，不默认强杀处理进程。
+
+命令执行期间日志仍可显示，重复提交业务命令会明确提示当前忙。独立 `console` 命令和 `quit` 已移除。无人值守运行使用 `./run worker` 或 `docker compose up -d`；只执行一个完整周期可用 `./run worker --once`，该方式也包含实际账本写入。查询和维护使用单次CLI。
 
 `sync` 反馈“已排队”或“已有请求已合并”，不表示采集完成。`resolve` 反馈处理决定保存或用例结果，不代表账本已写入。日志中的“采集完成”“写入尝试已登记”“写入已核实”“既有关联已恢复”分别对应不同阶段；UNKNOWN不会因为显示了日志而重新发送。核对结果发布与报告文件导出也分别记录。
 
-日志文件仅由worker写入和轮转，控制台只读尾随；状态与问题仍以数据库为准。修改级别需让worker使用新的环境配置，控制台不能恢复此前未被记录的DEBUG事件。
+日志文件仅由worker写入和轮转，控制台只读尾随；状态与问题仍以数据库为准。修改级别需更新 `config.toml` 顶层 `log_level` 并重启 worker，控制台不能恢复此前未被记录的DEBUG事件。
 
 ## 持久化、备份与恢复
 
@@ -190,7 +197,7 @@ docker compose run --rm importer console
 
 不保存完整业务审计或已解决问题历史：人工处理只保留最近一次理由，外部尝试保留确切请求及版本。问题随对象恢复或过期结果删除而退出汇总。
 
-应用日志的轮转由 `EBKI_LOG_MAX_BYTES` 与 `EBKI_LOG_BACKUPS` 控制；日志轮转不会删除入账状态或原始邮件。维护命令与常驻服务按实现的日志策略输出，不能用“有日志”判断业务提交成功。容器重建后须复用原数据库及挂载目录。
+应用日志固定按 10 MiB 轮转，保留 5 个归档；Docker 标准输出日志由 Compose 的 `logging` 配置独立限额。日志轮转不会删除入账状态或原始邮件。维护命令与常驻服务按实现的日志策略输出，不能用“有日志”判断业务提交成功。容器重建后须复用原数据库及挂载目录。
 
 备份前停止 importer，确保没有并发维护写入，再用 PostgreSQL 备份工具保存 **importer 数据库与原始证据目录的同一停机快照**，同时备份配置和所需报告。按自己的秘密管理机制备份环境变量；应用日志单独归档。没有内置 `backup` 或 `restore --verify-first` 命令。
 

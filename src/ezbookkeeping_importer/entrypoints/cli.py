@@ -37,7 +37,7 @@ def build_parser(*, interactive=False, parser_class=argparse.ArgumentParser):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
     if not interactive:
-        for name in ("migrate", "doctor", "restore-audit", "console"):
+        for name in ("migrate", "doctor", "restore-audit", "run"):
             commands.add_parser(name)
         worker = commands.add_parser("worker")
         worker.add_argument("--once", action="store_true")
@@ -157,10 +157,10 @@ def command_error(exc: Exception) -> dict:
 def main():
     args = parse_command(build_parser())
     try:
-        if args.command == "console":
-            from .console import run_console
+        if args.command == "run":
+            from .run import run_interactive
 
-            return run_console(args.config)
+            return run_interactive(args.config)
         result = execute_command(args)
         if args.command != "worker":
             output(result)

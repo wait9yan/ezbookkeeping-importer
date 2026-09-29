@@ -9,8 +9,13 @@ from ..domain.errors import LogPersistenceError
 
 
 class StrictFileHandler(RotatingFileHandler):
+    def __init__(self, *args, report_stderr=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.report_stderr = report_stderr
+
     def handleError(self, record):
-        sys.stderr.write("runtime log persistence failed\n")
+        if self.report_stderr:
+            sys.stderr.write("runtime log persistence failed\n")
         raise LogPersistenceError("runtime log persistence failed")
 
 
@@ -48,7 +53,7 @@ class TerminalHandler(logging.Handler):
         )
 
 
-def configure_logging(settings):
+def configure_logging(settings, *, terminal=True):
     settings.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     logger = logging.getLogger("ebki")
     logger.setLevel(settings.log_level)
@@ -62,9 +67,13 @@ def configure_logging(settings):
             maxBytes=settings.log_max_bytes,
             backupCount=settings.log_backups,
             encoding="utf-8",
+            report_stderr=terminal,
         ),
-        TerminalHandler() if sys.stdout.isatty() else logging.StreamHandler(sys.stdout),
     ]
+    if terminal:
+        handlers.append(
+            TerminalHandler() if sys.stdout.isatty() else logging.StreamHandler(sys.stdout)
+        )
     for handler in handlers:
         handler.setFormatter(JsonFormatter())
         logger.addHandler(handler)

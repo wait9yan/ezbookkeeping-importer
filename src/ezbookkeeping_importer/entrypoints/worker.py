@@ -19,39 +19,63 @@ def next_check(now: datetime) -> datetime:
     return boundary + timedelta(minutes=minutes - now.minute % minutes)
 
 
-def run(runtime, once: bool = False):
+class StopSignals:
+    """信号处理器只设置本地标志；日志与跨进程同步留在正常控制流。"""
+
+    def __init__(self, external=None):
+        self.external = external
+        self.reason: str | None = None
+        self.previous = {}
+
+    def is_set(self):
+        return self.reason is not None or (self.external is not None and self.external.is_set())
+
+    def _request(self, signum, frame):
+        if self.reason is None:
+            self.reason = signal.Signals(signum).name
+
+    def __enter__(self):
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            self.previous[sig] = signal.signal(sig, self._request)
+        return self
+
+    def __exit__(self, *args):
+        for sig, handler in self.previous.items():
+            signal.signal(sig, handler)
+
+
+def run(runtime, once: bool = False, *, stop_event=None, ready=None, terminal=True):
+    with StopSignals(stop_event) as stopped:
+        _run(runtime, once, stopped, ready, terminal)
+
+
+def _run(runtime, once, stopped, ready, terminal):
+    if stopped.is_set():
+        return
     if not runtime.store.lock_worker():
         raise Conflict("another worker is already running")
-    logger = configure_logging(runtime.settings)
+    logger = configure_logging(runtime.settings, terminal=terminal)
     started = time.monotonic()
     with event_context(run_id=uuid.uuid4().hex):
         emit("worker_starting", mode="once" if once else "continuous")
-        stopped = False
-        stop_reason = "once" if once else "requested"
-
-        def stop(signum, frame):
-            nonlocal stopped, stop_reason
-            if not stopped:
-                stopped = True
-                stop_reason = signal.Signals(signum).name
-                emit("worker_stop_requested", reason=stop_reason)
-
-        signal.signal(signal.SIGTERM, stop)
-        signal.signal(signal.SIGINT, stop)
         try:
             recovered = recover_dispatching(runtime.store)
-            request_sync(runtime.store)
+            if not stopped.is_set():
+                request_sync(runtime.store)
             due = datetime.now(ZoneInfo(runtime.settings.timezone))
-            emit("worker_started", counts={"recovered": recovered}, next_check_at=due.isoformat())
+            if not stopped.is_set():
+                emit("worker_started", counts={"recovered": recovered}, next_check_at=due.isoformat())
+                if ready is not None:
+                    ready()
             cycle_was_failed = False
-            while not stopped:
+            while not stopped.is_set():
                 now = datetime.now(ZoneInfo(runtime.settings.timezone))
                 if now >= due:
                     request_sync(runtime.store)
                     due = next_check(now)
                 try:
-                    success = cycle(runtime, logger)
-                    if once and not success:
+                    success = cycle(runtime, logger, should_stop=stopped.is_set)
+                    if once and success is False:
                         raise ImporterError(
                             "synchronization failed; persisted tasks were still processed"
                         )
@@ -79,18 +103,17 @@ def run(runtime, once: bool = False):
                     if once:
                         raise
                 else:
-                    if cycle_was_failed and success:
+                    if cycle_was_failed and success is True:
                         emit("cycle_recovered", stage="cycle")
                         cycle_was_failed = False
                 if once:
                     break
                 for _ in range(30):
-                    if stopped:
+                    if stopped.is_set():
                         break
                     time.sleep(1)
         except LogPersistenceError:
-            # The handler already reported an explicit safe stderr failure. Retrying
-            # the same broken log sink cannot make a fatal event durable.
+            # 由入口的安全诊断通道报告；不能再次写入同一个故障日志文件。
             raise
         except Exception as exc:
             emit(
@@ -99,6 +122,9 @@ def run(runtime, once: bool = False):
                 **failure_fields(exc, "worker_failed", getattr(exc, "processing_stage", "worker")),
             )
             raise
+        stop_reason = stopped.reason or ("requested" if stopped.is_set() else "once")
+        if stopped.is_set():
+            emit("worker_stop_requested", reason=stop_reason)
         emit(
             "worker_stopped",
             reason=stop_reason,

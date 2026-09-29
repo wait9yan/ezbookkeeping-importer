@@ -83,11 +83,11 @@ def test_disconnect_after_external_commit_exits_and_restart_verifies(
     pipeline.queue(store, tmp_path, settings, ledger)
     logger = Mock()
     runtime = SimpleNamespace(store=store, settings=settings)
-    monkeypatch.setattr(worker, "configure_logging", lambda _: logger)
+    monkeypatch.setattr(worker, "configure_logging", lambda _, *, terminal: logger)
     monkeypatch.setattr(worker.signal, "signal", Mock())
     monkeypatch.setattr(worker.time, "sleep", lambda _: pytest.fail("must exit immediately"))
     ledger.before_create = store.close
-    monkeypatch.setattr(worker, "cycle", lambda *args: write_queued(store, ledger))
+    monkeypatch.setattr(worker, "cycle", lambda *args, should_stop: write_queued(store, ledger))
     with pytest.raises(ImporterError, match="database connection lost"):
         worker.run(runtime)
     fresh = database.connect()

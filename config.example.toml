@@ -1,6 +1,9 @@
 # 配置文件
-# 本文件只保存业务规则；服务连接和运行参数见 .env.example。
+# 本文件保存业务规则和日志级别；服务连接参数见 .env.example。
 # 本地启动使用 uv run --env-file .env ebki --config config.toml ...。
+
+# 日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL；修改后重启进程。
+log_level = "INFO"
 
 # 时区
 timezone = "Asia/Shanghai"

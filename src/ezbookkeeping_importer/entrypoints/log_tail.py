@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from ..application.events import safe_event
+from ..domain.errors import ImporterError
 
 READ_BYTES = 65_536
 MAX_LINE_BYTES = 262_144
@@ -34,6 +35,15 @@ class LogTailer:
         if self._file is not None:
             self._file.close()
             self._file = None
+
+    def drain(self):
+        """写入者结束后读完剩余数据，包括超过单轮读取大小的收尾日志。"""
+        while True:
+            before = (self._identity, self._file.tell() if self._file else None)
+            yield from self.poll()
+            after = (self._identity, self._file.tell() if self._file else None)
+            if after == before:
+                return
 
     def _notice(self, key: str, message: str) -> list:
         if self._problem == key:
@@ -144,9 +154,5 @@ class LogTailer:
             self._start_at_end = False
             output.extend(self._notice("missing", "日志文件尚不存在，等待 worker 创建"))
         except OSError as exc:
-            output.extend(
-                self._notice(
-                    type(exc).__name__, f"日志读取失败（{type(exc).__name__}），将继续重试"
-                )
-            )
+            raise ImporterError(f"日志读取失败（{type(exc).__name__}）") from exc
         return output

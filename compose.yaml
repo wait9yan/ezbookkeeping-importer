@@ -5,7 +5,6 @@ services:
     command: ["worker"]
     restart: unless-stopped
     init: true
-    user: "${EBKI_UID:-10001}:${EBKI_GID:-10001}"
     environment:
       # 必需项由应用按命令检查；migrate 不应要求邮箱或模型凭据。
       EBKI_DATABASE_URL: "${EBKI_DATABASE_URL-}"
@@ -21,12 +20,6 @@ services:
       EBKI_IMAP_USERNAME: "${EBKI_IMAP_USERNAME-}"
       EBKI_IMAP_PASSWORD: "${EBKI_IMAP_PASSWORD-}"
       EBKI_IMAP_TIMEOUT_SECONDS: "${EBKI_IMAP_TIMEOUT_SECONDS-30}"
-      EBKI_EVIDENCE_DIR: "${EBKI_EVIDENCE_DIR-/app/data/email}"
-      EBKI_REPORT_DIR: "${EBKI_REPORT_DIR-/app/data/reports}"
-      EBKI_LOG_DIR: "${EBKI_LOG_DIR-/app/data/logs}"
-      EBKI_LOG_LEVEL: "${EBKI_LOG_LEVEL-INFO}"
-      EBKI_LOG_MAX_BYTES: "${EBKI_LOG_MAX_BYTES-10485760}"
-      EBKI_LOG_BACKUPS: "${EBKI_LOG_BACKUPS-5}"
     volumes:
       - type: bind
         source: ./config.toml
@@ -35,14 +28,14 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: "${EBKI_EVIDENCE_DIR-./data/email}"
-        target: "${EBKI_EVIDENCE_DIR-/app/data/email}"
+        source: "./data/email"
+        target: "/app/data/email"
       - type: bind
-        source: "${EBKI_REPORT_DIR-./data/reports}"
-        target: "${EBKI_REPORT_DIR-/app/data/reports}"
+        source: "./data/reports"
+        target: "/app/data/reports"
       - type: bind
-        source: "${EBKI_LOG_DIR-./data/logs}"
-        target: "${EBKI_LOG_DIR-/app/data/logs}"
+        source: "./data/logs"
+        target: "/app/data/logs"
     networks:
       - bookkeeping
     logging:
@@ -54,4 +47,4 @@ services:
 networks:
   bookkeeping:
     external: true
-    name: "${EBKI_DOCKER_NETWORK:?Set the existing PostgreSQL/ezBookkeeping Docker network}"
+    name: "bookkeeping"

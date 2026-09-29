@@ -1,4 +1,4 @@
-"""TOML 保存业务决定；服务连接与运行参数只从进程环境读取。"""
+"""TOML 保存业务决定和日志级别；服务连接只从进程环境读取。"""
 
 import os
 import tomllib
@@ -149,12 +149,6 @@ ENV_FIELDS = {
     "mail.username": "EBKI_IMAP_USERNAME",
     "mail.password": "EBKI_IMAP_PASSWORD",
     "mail.timeout_seconds": "EBKI_IMAP_TIMEOUT_SECONDS",
-    "evidence_dir": "EBKI_EVIDENCE_DIR",
-    "report_dir": "EBKI_REPORT_DIR",
-    "log_dir": "EBKI_LOG_DIR",
-    "log_level": "EBKI_LOG_LEVEL",
-    "log_max_bytes": "EBKI_LOG_MAX_BYTES",
-    "log_backups": "EBKI_LOG_BACKUPS",
 }
 LOCAL_COMMANDS = {"migrate", "status", "issues", "sync", "resolve"}
 
@@ -166,10 +160,8 @@ def command_capabilities(
     action: str | None = None,
     account_id: str | None = None,
 ) -> frozenset[str]:
-    if command == "console":
-        return frozenset()
     capabilities = {"database"}
-    if command in {"worker", "doctor"}:
+    if command in {"run", "worker", "doctor"}:
         capabilities.update({"ledger", "mail"})
         if classification_mode == "ai":
             capabilities.add("ai")
@@ -179,10 +171,8 @@ def command_capabilities(
         raise ConfigurationError("unknown command dependency profile")
     if command == "migrate":
         capabilities.add("create_database")
-    if command == "worker":
-        capabilities.add("evidence")
-    if command == "worker":
-        capabilities.add("pipeline")
+    if command in {"run", "worker"}:
+        capabilities.update({"evidence", "pipeline"})
     return frozenset(capabilities)
 
 
@@ -192,9 +182,9 @@ def validate_command(
     capabilities = command_capabilities(
         command, settings.classification_mode, action=action, account_id=account_id
     )
-    required: dict[str, str | None] = {}
-    if "database" in capabilities:
-        required["EBKI_DATABASE_URL"] = settings.database_url.get_secret_value()
+    required: dict[str, str | None] = {
+        "EBKI_DATABASE_URL": settings.database_url.get_secret_value()
+    }
     if "ledger" in capabilities:
         required.update(
             {
@@ -276,6 +266,9 @@ def load_settings(
     except OSError:
         raise ConfigurationError("business configuration file cannot be read") from None
     retired = []
+    for field in ("evidence_dir", "report_dir", "log_dir", "log_max_bytes", "log_backups"):
+        if field in data:
+            retired.append(f"{field} -> remove; runtime directories and log rotation are fixed")
     for field in ("writes_enabled", "refund_ownership_confirmed", "historical_boundary_reviewed"):
         if field in data:
             retired.append(
@@ -300,7 +293,7 @@ def load_settings(
             moved.append(f"{field} -> {variable}")
     if moved:
         raise ConfigurationError(
-            "move service/runtime TOML fields to environment: " + "; ".join(moved)
+            "move service TOML fields to environment: " + "; ".join(moved)
         )
     for field, variable in ENV_FIELDS.items():
         if variable not in os.environ:

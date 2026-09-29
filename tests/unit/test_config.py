@@ -36,24 +36,50 @@ def environment(monkeypatch, values=ENV):
         monkeypatch.setenv(variable, value)
 
 
-def test_runtime_directories_default_to_data_and_allow_environment_override(config, monkeypatch):
+@pytest.mark.parametrize("log_level", [None, "WARNING"])
+def test_removed_environment_options_do_not_override_runtime_defaults(config, monkeypatch, log_level):
     environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
-    defaults = load_settings(str(config), command="status")
-    assert (defaults.evidence_dir, defaults.report_dir, defaults.log_dir) == (
+    environment(
+        monkeypatch,
+        {
+            "EBKI_EVIDENCE_DIR": "/custom/email",
+            "EBKI_REPORT_DIR": "/custom/reports",
+            "EBKI_LOG_DIR": "/custom/logs",
+            "EBKI_LOG_LEVEL": "DEBUG",
+            "EBKI_LOG_MAX_BYTES": "2048",
+            "EBKI_LOG_BACKUPS": "3",
+        },
+    )
+    if log_level is not None:
+        config.write_text(f'log_level = "{log_level}"\n' + BUSINESS)
+    settings = load_settings(str(config), command="status")
+    assert (settings.evidence_dir, settings.report_dir, settings.log_dir) == (
         Path("data/email"),
         Path("data/reports"),
         Path("data/logs"),
     )
-    directories = {
-        "EBKI_EVIDENCE_DIR": "/custom/email",
-        "EBKI_REPORT_DIR": "/custom/reports",
-        "EBKI_LOG_DIR": "/custom/logs",
-    }
-    environment(monkeypatch, directories)
-    settings = load_settings(str(config), command="status")
-    assert (settings.evidence_dir, settings.report_dir, settings.log_dir) == tuple(
-        Path(value) for value in directories.values()
-    )
+    assert settings.log_level == (log_level or "INFO")
+    assert settings.log_max_bytes == 10_485_760
+    assert settings.log_backups == 5
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("evidence_dir", '"SECRET_PATH"'),
+        ("report_dir", '"SECRET_PATH"'),
+        ("log_dir", '"SECRET_PATH"'),
+        ("log_max_bytes", "2048"),
+        ("log_backups", "3"),
+    ],
+)
+def test_fixed_runtime_settings_cannot_be_overridden_in_toml(config, monkeypatch, field, value):
+    environment(monkeypatch)
+    config.write_text(f"{field} = {value}\n" + BUSINESS)
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(str(config))
+    assert f"{field} -> remove" in str(error.value)
+    assert "SECRET_PATH" not in str(error.value)
 
 
 @pytest.mark.parametrize("command", ["migrate", "status", "issues", "sync"])
@@ -108,7 +134,7 @@ def test_ai_mode_requires_url_model_and_key(config, monkeypatch, command):
         load_settings(str(config), command=command)
 
 
-def test_every_runtime_field_comes_from_environment(config, monkeypatch, tmp_path):
+def test_every_service_field_comes_from_environment(config, monkeypatch):
     environment(monkeypatch)
     overrides = {
         "EBKI_LEDGER_TIMEOUT_SECONDS": "4.5",
@@ -116,12 +142,6 @@ def test_every_runtime_field_comes_from_environment(config, monkeypatch, tmp_pat
         "EBKI_IMAP_HOST": "imap.example.test",
         "EBKI_IMAP_PORT": "1993",
         "EBKI_IMAP_TIMEOUT_SECONDS": "6.5",
-        "EBKI_EVIDENCE_DIR": str(tmp_path / "evidence"),
-        "EBKI_REPORT_DIR": str(tmp_path / "reports"),
-        "EBKI_LOG_DIR": str(tmp_path / "logs"),
-        "EBKI_LOG_LEVEL": "DEBUG",
-        "EBKI_LOG_MAX_BYTES": "2048",
-        "EBKI_LOG_BACKUPS": "3",
     }
     environment(monkeypatch, overrides)
     settings = load_settings(str(config))
@@ -146,7 +166,7 @@ def test_all_legacy_runtime_toml_keys_are_reported_without_values(config, monkey
     environment(monkeypatch)
     config.write_text(
         'ledger_url="legacy-url-secret"\nai_token="legacy-token-secret"\n'
-        'log_max_bytes=123\ntimezone="Asia/Shanghai"\n[mail]\n'
+        'timezone="Asia/Shanghai"\n[mail]\n'
         'source_id="synthetic"\nusername="legacy-username-secret"\npassword="legacy-password-secret"\n'
     )
     with pytest.raises(ConfigurationError) as error:
@@ -155,7 +175,6 @@ def test_all_legacy_runtime_toml_keys_are_reported_without_values(config, monkey
     for source, destination in [
         ("ledger_url", "EBKI_LEDGER_URL"),
         ("ai_token", "EBKI_AI_TOKEN"),
-        ("log_max_bytes", "EBKI_LOG_MAX_BYTES"),
         ("mail.username", "EBKI_IMAP_USERNAME"),
         ("mail.password", "EBKI_IMAP_PASSWORD"),
     ]:
@@ -173,13 +192,9 @@ def test_all_legacy_runtime_toml_keys_are_reported_without_values(config, monkey
         ("EBKI_LEDGER_TIMEOUT_SECONDS", "nan"),
         ("EBKI_AI_TIMEOUT_SECONDS", "inf"),
         ("EBKI_IMAP_TIMEOUT_SECONDS", "0"),
-        ("EBKI_LOG_MAX_BYTES", "0"),
-        ("EBKI_LOG_BACKUPS", "-1"),
-        ("EBKI_LOG_LEVEL", "secret-not-level"),
         ("EBKI_LEDGER_URL", "https://user:secret@example.test"),
         ("EBKI_AI_URL", "file:///secret"),
         ("EBKI_LEDGER_URL", "https://example.test:99999/secret"),
-        ("EBKI_LOG_DIR", ""),
     ],
 )
 def test_invalid_values_report_safe_environment_names(config, monkeypatch, variable, value):
@@ -476,16 +491,34 @@ def test_removed_source_policy_requires_migration(config, monkeypatch, field, va
         load_settings(str(config))
 
 
-def test_console_opens_without_database_or_remote_credentials(config):
-    settings = load_settings(str(config), command="console")
-    assert settings.database_url.get_secret_value() == ""
-    assert settings.log_level == "INFO"
-
-
-def test_log_level_environment_is_validated_and_normalized(config, monkeypatch):
-    monkeypatch.setenv("EBKI_LOG_LEVEL", "debug")
-    assert load_settings(str(config), command="console").log_level == "DEBUG"
-    monkeypatch.setenv("EBKI_LOG_LEVEL", "SECRET_LEVEL")
-    with pytest.raises(ConfigurationError) as error:
+def test_console_dependency_profile_is_removed(config):
+    with pytest.raises(ConfigurationError, match="unknown command"):
         load_settings(str(config), command="console")
-    assert "EBKI_LOG_LEVEL" in str(error.value) and "SECRET_LEVEL" not in str(error.value)
+
+
+@pytest.mark.parametrize("value", ["debug", "INFO", "warning", "ERROR", "critical"])
+def test_log_level_toml_is_validated_and_normalized(config, monkeypatch, value):
+    environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
+    config.write_text(f'log_level = "{value}"\n' + BUSINESS)
+    assert load_settings(str(config), command="status").log_level == value.upper()
+
+
+@pytest.mark.parametrize("value", ['"SECRET_LEVEL"', "123", "true"])
+def test_invalid_log_level_toml_reports_safe_field_name(config, monkeypatch, value):
+    environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
+    config.write_text(f"log_level = {value}\n" + BUSINESS)
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(str(config), command="status")
+    assert "log_level" in str(error.value)
+    assert "SECRET_LEVEL" not in str(error.value)
+    assert "EBKI_LOG_LEVEL" not in str(error.value)
+
+
+def test_run_and_worker_share_capabilities_and_required_configuration(config, monkeypatch):
+    from ezbookkeeping_importer.config import command_capabilities
+
+    assert command_capabilities("run", "ai") == command_capabilities("worker", "ai")
+    with pytest.raises(ConfigurationError, match="EBKI_DATABASE_URL"):
+        load_settings(str(config), command="run")
+    environment(monkeypatch)
+    assert load_settings(str(config), command="run") == load_settings(str(config), command="worker")

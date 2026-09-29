@@ -1,12 +1,12 @@
 # 配置入口与命令依赖
 
-2026-09-20 用户授权统一配置来源。应用只读取业务 TOML 和进程环境，不自动搜索 `.env`，不再按秘密/非秘密拆分同一服务配置。
+2026-09-20 用户授权统一配置来源。应用只读取 TOML 和进程环境，不自动搜索 `.env`，不再按秘密/非秘密拆分同一服务配置。
 
 ## 来源契约
 
-- `config.toml`：业务策略、还款历史映射、商户规则、分类模式、时区；`mail.source_id` 为稳定业务身份。
-- 进程环境：数据库；账本地址/Token/超时；AI 地址/模型/Key/超时；IMAP 主机/端口/用户名/授权码/超时；原件/报告/日志目录及轮转参数。
-- `.env.example` 列出环境变量和默认值；本地使用 `uv run --env-file .env ebki --config config.toml ...` 显式加载。已有进程环境优先。应用不引入第二个 dotenv 加载器。
+- `config.toml`：业务策略、还款历史映射、商户规则、分类模式、时区、日志级别；`mail.source_id` 为稳定业务身份。
+- 进程环境：数据库；账本地址/Token/超时；AI 地址/模型/Key/超时；IMAP 主机/端口/用户名/授权码/超时。
+- `.env.example` 列出环境变量和默认值；本地`./run`定位项目根目录并委托uv显式加载根.env，零参数选择`ebki run`、有参数透传CLI。原始`uv run --env-file .env ebki ...`继续可用，config.toml已有默认值。已有进程环境优先，应用不引入第二个dotenv加载器。
 - Compose 显式映射同一组变量，但不能用 `${TOKEN:?}` 预先要求所有凭据，否则数据库维护命令无法执行。Docker 网络是部署层必需条件，独立于应用的命令依赖。
 - 移入环境变量的旧 TOML 键必须报出字段名与对应环境变量，不能静默覆盖、丢弃或按环境缺失回退到 TOML。
 
@@ -17,15 +17,15 @@
 | 命令 | 能力要求 |
 | --- | --- |
 | migrate | 数据库与显式数据库初始化能力；仅缺库时经同实例维护库创建目标 |
-| status、issues、sync、console | 数据库；不构造不使用的外部客户端和文件目录；console只读取日志路径，各业务命令独立组装依赖 |
+| status、issues、sync | 数据库；不构造不使用的外部客户端和文件目录；各业务命令独立组装依赖 |
 | resolve 本地决定 | 数据库 |
 | resolve link、带 account-id 的账户修正、restore-audit | 数据库与账本 |
-| worker | 数据库、账本、IMAP、流水线与存储；AI 模式额外要求 AI 服务 |
+| run、worker | 数据库、账本、IMAP、流水线与存储；AI 模式额外要求 AI 服务；run在worker子进程内构造业务Runtime，父进程只负责交互与生命周期 |
 | doctor | 检查完整 worker 连接配置，实际探测仍只包括已有数据库和账本读取；不声称 IMAP/AI 已接通 |
 
 ## 验证与错误
 
-必需项缺失和非法输入在资源创建前失败。错误只能报告字段名、变量名和安全原因，不输出输入值、DSN、Token 或含凭据 URL。rules_only 不要求 AI；仍要拒绝已经提供但语法非法的环境值。URL、端口、有限正超时及轮转范围通过统一配置边界校验，超时必须传入真正的客户端。
+必需项缺失和非法输入在资源创建前失败。错误只能报告字段名、变量名和安全原因，不输出输入值、DSN、Token 或含凭据 URL。rules_only 不要求 AI；仍要拒绝已经提供但语法非法的环境值。URL、端口、有限正超时及日志级别通过统一配置边界校验，超时必须传入真正的客户端。
 
 正确：迁移只提供 `EBKI_DATABASE_URL`，业务 TOML 合法即可；worker 缺模型配置时在启动阶段一次列出缺项。
 
@@ -33,11 +33,11 @@
 
 ## 路径与部署
 
-本地运行目录默认相对工作目录的 `data/email`、`data/reports`、`data/logs`，容器默认 `/app/data/*` 并对应宿主机 `./data/*` 挂载。用户通过 `EBKI_*_DIR` 覆盖 Compose 路径时必须提供绝对路径，同一值用于宿主机源、容器目标和应用环境。秘密不打包；sdist 包含 `.env.example`，不包含 `.env` 或运行配置。
+本地运行目录固定为相对工作目录的 `data/email`、`data/reports`、`data/logs`，容器工作目录为 `/app`，对应宿主机 `./data/*` 挂载。目录及轮转参数不接受 TOML 或环境覆盖；TOML 旧字段明确拒绝，内部 Settings 仍可供测试注入。日志固定按 10 MiB 轮转，保留 5 个归档。网络名直接配置在 Compose，用户默认继承 Dockerfile 的 `10001:10001`，需要时直接设置 Compose 的 `user`；宿主机挂载目录需匹配写权限。秘密不打包；sdist 包含 `.env.example`，不包含 `.env` 或运行配置。
 
 ## 必需回归
 
-环境变量实际生效；业务规则保留；旧键明确迁移；必需项和非法值不泄露；按命令依赖矩阵；rules_only 无 AI；超时透传；资源构造失败清理；实际 uv 加载合成 `.env`；Compose 空凭据配置渲染；默认与覆盖路径挂载一致。
+环境变量实际生效；业务规则保留；旧键明确迁移；必需项和非法值不泄露；按命令依赖矩阵；rules_only 无 AI；超时透传；资源构造失败清理；实际 uv 加载合成 `.env`；Compose 空凭据配置渲染；固定路径挂载一致；日志级别仅从 TOML 读取；旧目录和轮转 TOML 字段拒绝。
 
 普通消费不再接受 `accounts` 配置，改从 ezBookkeeping 账户描述解析卡号，再按邮件原币唯一匹配。新流程不用汇率，不保留汇率时效配置或专用迁移检查。旧账户映射必须明确提示迁移，不能与远端描述共同构成两个映射来源；契约见 [卡号匹配与原币入账](account-matching.md)。
 
@@ -51,4 +51,6 @@ source_policy 与 trusted_authserv_id 已删除，旧键明确迁移报错。来
 
 ## 日志级别与控制台
 
-`EBKI_LOG_LEVEL` 对应 Settings.log_level，默认INFO，接受DEBUG/INFO/WARNING/ERROR/CRITICAL，非法值明确配置错误。控制台入口只装配交互环境；status/issues/sync仍仅需数据库，resolve按现有动作决定是否需要账本，不因打开控制台要求邮箱或模型凭据。控制台命令复用同一能力判定，不能复制一套依赖表。
+TOML 顶层 `log_level` 对应 Settings.log_level，默认INFO，接受DEBUG/INFO/WARNING/ERROR/CRITICAL，非法值明确配置错误。交互控制台仅作为统一run内部组件，不保留独立console命令。run需要完整worker配置；单次status/issues/sync仍仅需数据库，resolve按现有动作决定是否需要账本。控制台命令复用同一能力判定，不能复制一套依赖表。
+
+run必须在创建worker前拒绝非TTY；无人值守显式使用worker。启动器不自动migrate、搜索父目录配置或切换到Docker，不因为删去参数而改变数据和配置来源。

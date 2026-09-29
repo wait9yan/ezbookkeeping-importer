@@ -92,3 +92,22 @@ def test_tty_worker_keeps_timestamp_and_level_without_losing_chinese_title(tmp_p
         assert "WARNING" in rendered and "已收到停止请求" in rendered
     finally:
         close_logger(logger)
+
+
+def test_managed_worker_only_writes_file_and_reports_failure_to_owner(tmp_path, monkeypatch, capsys):
+    logger = configure_logging(settings(tmp_path), terminal=False)
+    try:
+        logger.info("worker_started")
+        assert capsys.readouterr() == ("", "")
+        assert json.loads((tmp_path / "worker.jsonl").read_text())["event"] == "worker_started"
+        handler, = logger.handlers
+
+        def fail_write(value):
+            raise OSError("private disk detail")
+
+        monkeypatch.setattr(handler.stream, "write", fail_write)
+        with pytest.raises(OSError, match="runtime log persistence failed"):
+            logger.info("worker_stopped")
+        assert capsys.readouterr() == ("", "")
+    finally:
+        close_logger(logger)

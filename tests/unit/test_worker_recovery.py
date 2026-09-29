@@ -20,7 +20,7 @@ def setup_worker(monkeypatch, caplog):
     monkeypatch.setattr(logger, "disabled", False)
     caplog.set_level(logging.INFO, logger="ebki")
     runtime = SimpleNamespace(store=store, settings=SimpleNamespace(timezone="Asia/Shanghai"))
-    monkeypatch.setattr(worker, "configure_logging", lambda _: logger)
+    monkeypatch.setattr(worker, "configure_logging", lambda _, **kwargs: logger)
     recovery = Mock(return_value=0)
     monkeypatch.setattr(worker, "recover_dispatching", recovery)
     monkeypatch.setattr(worker, "request_sync", Mock())
@@ -39,7 +39,9 @@ def test_database_disconnect_exits_without_waiting_for_next_scheduled_sync(monke
     with pytest.raises(ImporterError, match="restart the worker") as error:
         worker.run(runtime)
     assert "private" not in str(error.value)
-    cycle.assert_called_once_with(runtime, logger)
+    assert cycle.call_count == 1
+    assert cycle.call_args.args == (runtime, logger)
+    assert callable(cycle.call_args.kwargs["should_stop"])
     events = [record.event_data for record in caplog.records if record.name == "ebki"]
     assert [event["event"] for event in events] == [
         "worker_starting",

@@ -11,9 +11,11 @@ from .write import write_queued
 from .reconcile import reconcile_if_due as reconcile
 
 
-def cycle(runtime, logger):
+def cycle(runtime, logger, *, should_stop=lambda: False):
     store = runtime.store
     sync_failed = False
+    if should_stop():
+        return None
     job = store.one("""UPDATE background_task SET status='dispatching' WHERE id=(SELECT id FROM background_task
         WHERE task_type IN ('sync','sync_range') AND status='queued' ORDER BY updated_at,id LIMIT 1) RETURNING *""")
     if job:
@@ -78,6 +80,8 @@ def cycle(runtime, logger):
         ("write", lambda: write_queued(store, runtime.ledger)),
     ]
     for stage, operation in stages:
+        if should_stop():
+            return None
         with event_context(stage=stage):
             try:
                 operation()
@@ -87,4 +91,4 @@ def cycle(runtime, logger):
                 setattr(exc, "processing_stage", stage)
                 raise
 
-    return not sync_failed
+    return None if should_stop() else not sync_failed

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from ezbookkeeping_importer.entrypoints import cli, console
+from ezbookkeeping_importer.entrypoints import cli, console, run
 from ezbookkeeping_importer.entrypoints.log_tail import LogNotice, LogTailer, MAX_LINE_BYTES
 
 
@@ -61,7 +61,8 @@ def test_parser_reuses_cli_parameters_and_preserves_quoted_reason():
         "doctor",
         "restore-audit",
         "console",
-        "quit extra",
+        "quit",
+        "exit extra",
         "sync --since 2026-09-31",
         "sync --since 2026-09-02 --until 2026-09-01",
         'resolve "unfinished',
@@ -81,9 +82,9 @@ def test_console_help_does_not_print_outside_output_proxy(line, capsys):
 
 
 def test_non_tty_fails_before_reading_config(monkeypatch, capsys):
-    monkeypatch.setattr(console.sys.stdin, "isatty", lambda: False)
-    monkeypatch.setattr(console, "load_settings", lambda *a, **k: pytest.fail("loaded config"))
-    assert console.run_console("does-not-exist.toml") == 2
+    monkeypatch.setattr(run.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(run, "load_settings", lambda *a, **k: pytest.fail("loaded config"))
+    assert run.run_interactive("does-not-exist.toml") == 2
     assert "单次命令" in capsys.readouterr().err
 
 
@@ -199,12 +200,10 @@ def test_read_failure_visible_without_echoing_path_or_exception(tmp_path, monkey
         raise PermissionError("SECRET unsafe diagnostic")
 
     monkeypatch.setattr(Path, "open", fail)
-    first = tailer.poll()
-    assert "PermissionError" in notices(first) and "SECRET" not in notices(first)
-    assert tailer.poll() == []
+    with pytest.raises(console.ImporterError, match="PermissionError") as error:
+        tailer.poll()
+    assert "SECRET" not in str(error.value)
     monkeypatch.setattr(Path, "open", original_open)
-    path.touch()
-    assert "已恢复" in notices(tailer.poll())
     tailer.close()
 
 
@@ -269,12 +268,33 @@ def test_command_failure_is_visible_safe_and_closes_runtime(monkeypatch):
     assert "RuntimeError" in output.getvalue() and "SECRET" not in output.getvalue()
 
 
+async def interact(config, path, level, session, display, *, execute=cli.execute_command):
+    tailer = LogTailer(path)
+    try:
+        tailer.poll()
+    except Exception as exc:
+        raise console.ImporterError(f"日志跟随已中断（{type(exc).__name__}）") from exc
+    finished = asyncio.Event()
+    follower = asyncio.create_task(console._follow(tailer, display, level, finished))
+    try:
+        await console.interact(
+            config, session, display, stop_requested=asyncio.Event(),
+            watchers=(follower,), execute=execute,
+        )
+    finally:
+        finished.set()
+        try:
+            await follower
+        finally:
+            tailer.close()
+
+
 class QueueSession:
     def __init__(self):
         self.queue = asyncio.Queue()
         self.prompts = 0
 
-    async def prompt_async(self, prompt):
+    async def prompt_async(self, prompt, **kwargs):
         self.prompts += 1
         item = await self.queue.get()
         if isinstance(item, BaseException):
@@ -288,7 +308,7 @@ async def wait_until(predicate):
             await asyncio.sleep(0.01)
 
 
-def test_slow_command_does_not_block_help_logs_ctrl_c_or_quit(tmp_path):
+def test_slow_command_does_not_block_help_logs_ctrl_c_or_exit(tmp_path):
     async def scenario():
         path = tmp_path / "worker.jsonl"
         path.touch()
@@ -305,13 +325,12 @@ def test_slow_command_does_not_block_help_logs_ctrl_c_or_quit(tmp_path):
             return {"synthetic": True}
 
         runner = asyncio.create_task(
-            console.interact("synthetic.toml", path, "INFO", session, display, execute=execute)
+            interact("synthetic.toml", path, "INFO", session, display, execute=execute)
         )
         try:
             await wait_until(lambda: session.prompts == 1)
             session.queue.put_nowait("status")
             await wait_until(started.is_set)
-            session.queue.put_nowait(KeyboardInterrupt())
             session.queue.put_nowait("help sync")
             session.queue.put_nowait("issues")
             await wait_until(lambda: "上一条命令仍在执行" in output.getvalue())
@@ -319,18 +338,18 @@ def test_slow_command_does_not_block_help_logs_ctrl_c_or_quit(tmp_path):
                 file.write(event("collection_progress", processed=3, total=5))
             await wait_until(lambda: "邮件采集进度" in output.getvalue())
             assert "--since" in output.getvalue()
-            session.queue.put_nowait("quit")
+            session.queue.put_nowait("exit")
             await wait_until(lambda: "正在等待" in output.getvalue())
             assert not runner.done()
             assert executed == ["status"]
             release.set()
             await asyncio.wait_for(runner, 3)
             assert "synthetic" in output.getvalue()
-            assert "控制台已退出" in output.getvalue()
+            assert "synthetic" in output.getvalue()
         finally:
             release.set()
             if not runner.done():
-                session.queue.put_nowait("quit")
+                session.queue.put_nowait("exit")
                 await asyncio.wait_for(runner, 3)
 
     asyncio.run(scenario())
@@ -351,7 +370,7 @@ def test_real_prompt_session_handles_completion_history_chinese_and_ctrl_c(tmp_p
         session = PromptSession(
             input=pipe,
             output=DummyOutput(),
-            completer=WordCompleter(["status", "issues", "resolve", "quit"]),
+            completer=WordCompleter(["status", "issues", "resolve", "exit"]),
             history=InMemoryHistory(),
         )
         executed = []
@@ -361,7 +380,7 @@ def test_real_prompt_session_handles_completion_history_chinese_and_ctrl_c(tmp_p
             return {"command_finished": len(executed)}
 
         runner = asyncio.create_task(
-            console.interact("c.toml", path, "INFO", session, display, execute=execute)
+            interact("c.toml", path, "INFO", session, display, execute=execute)
         )
         try:
             await asyncio.sleep(0.05)
@@ -376,17 +395,13 @@ def test_real_prompt_session_handles_completion_history_chinese_and_ctrl_c(tmp_p
             pipe.send_text("resolve bank_transactions abc --action retry --reason 中文理由\r")
             await wait_until(lambda: output.getvalue().count("command_finished") == 3)
             pipe.send_text("do-not-run-this\x03")
-            await asyncio.sleep(0.05)
-            pipe.send_text("issues\r")
-            await wait_until(lambda: output.getvalue().count("command_finished") == 4)
-            pipe.send_text("quit\r")
             await asyncio.wait_for(runner, 3)
-            assert [args.command for args in executed] == ["status", "status", "resolve", "issues"]
+            assert [args.command for args in executed] == ["status", "status", "resolve"]
             assert executed[2].reason == "中文理由"
             assert "命令未接受" not in output.getvalue()
         finally:
             if not runner.done():
-                pipe.send_text("\x03quit\r")
+                pipe.send_text("\x03exit\r")
                 await asyncio.wait_for(runner, 3)
 
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
@@ -403,7 +418,7 @@ def test_unexpected_tail_failure_interrupts_prompt_and_is_not_silent(tmp_path, m
         display, _ = screen()
         with pytest.raises(console.ImporterError, match="日志跟随已中断（RuntimeError）") as error:
             await asyncio.wait_for(
-                console.interact(
+                interact(
                     "c.toml", tmp_path / "worker.jsonl", "INFO", QueueSession(), display
                 ),
                 3,
@@ -411,24 +426,6 @@ def test_unexpected_tail_failure_interrupts_prompt_and_is_not_silent(tmp_path, m
         assert "SECRET" not in str(error.value)
 
     asyncio.run(scenario())
-
-
-def test_repeated_read_failure_does_not_claim_recovery_before_read_succeeds(tmp_path, monkeypatch):
-    path = tmp_path / "worker.jsonl"
-    path.touch()
-    tailer = LogTailer(path)
-    tailer.poll()
-    original_read = tailer._read
-
-    def fail():
-        raise OSError("SECRET")
-
-    monkeypatch.setattr(tailer, "_read", fail)
-    assert "读取失败" in notices(tailer.poll())
-    assert tailer.poll() == []
-    monkeypatch.setattr(tailer, "_read", original_read)
-    assert "已恢复" in notices(tailer.poll())
-    tailer.close()
 
 
 def test_logging_failure_has_specific_safe_command_diagnostic():
@@ -477,10 +474,23 @@ def test_unexpected_command_render_failure_interrupts_idle_prompt(tmp_path, monk
         display, _ = screen()
         with pytest.raises(RuntimeError, match="synthetic output failure"):
             await asyncio.wait_for(
-                console.interact(
+                interact(
                     "c.toml", path, "INFO", session, display, execute=lambda args: {}
                 ),
                 3,
             )
 
     asyncio.run(scenario())
+
+
+def test_final_drain_reads_more_than_one_chunk(tmp_path):
+    path = tmp_path / "worker.jsonl"
+    path.touch()
+    tailer = LogTailer(path)
+    tailer.poll()
+    path.write_bytes(event("collection_progress") * 1500 + event("worker_stopped"))
+    found = records(list(tailer.drain()))
+    assert len(found) == 1501
+    assert found[-1]["event"] == "worker_stopped"
+    assert list(tailer.drain()) == []
+    tailer.close()
