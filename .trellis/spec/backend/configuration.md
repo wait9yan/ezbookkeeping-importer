@@ -17,9 +17,9 @@
 | 命令 | 能力要求 |
 | --- | --- |
 | migrate | 数据库与显式数据库初始化能力；仅缺库时经同实例维护库创建目标 |
-| status、issues、sync | 数据库；不构造不使用的外部客户端和文件目录；各业务命令独立组装依赖 |
-| resolve 本地决定 | 数据库 |
-| resolve link、带 account-id 的账户修正、restore-audit | 数据库与账本 |
+| status、issues、sync、recheck | 数据库；不构造不使用的外部客户端和文件目录；各业务命令独立组装依赖。recheck只安排一次复查，真正查重和写入由worker执行 |
+| issues 内部本地处理 | 数据库 |
+| issues 内部候选查询、关联、账户修正；restore-audit | 数据库与账本 |
 | run、worker | 数据库、账本、IMAP、流水线与存储；AI 模式额外要求 AI 服务；run在worker子进程内构造业务Runtime，父进程只负责交互与生命周期 |
 | doctor | 检查完整 worker 连接配置，实际探测仍只包括已有数据库和账本读取；不声称 IMAP/AI 已接通 |
 
@@ -51,6 +51,6 @@ source_policy 与 trusted_authserv_id 已删除，旧键明确迁移报错。来
 
 ## 日志级别与控制台
 
-TOML 顶层 `log_level` 对应 Settings.log_level，默认INFO，接受DEBUG/INFO/WARNING/ERROR/CRITICAL，非法值明确配置错误。交互控制台仅作为统一run内部组件，不保留独立console命令。run需要完整worker配置；单次status/issues/sync仍仅需数据库，resolve按现有动作决定是否需要账本。控制台命令复用同一能力判定，不能复制一套依赖表。
+TOML 顶层 `log_level` 对应 Settings.log_level，默认INFO，接受DEBUG/INFO/WARNING/ERROR/CRITICAL，非法值明确配置错误。交互控制台仅作为统一run内部组件，不保留独立console命令。run需要完整worker配置；单次status/issues/sync/recheck仍仅需数据库，issues内部交互处理按动作决定是否需要账本，普通CLI issues仍只读且只需数据库；公开resolve已删除。控制台命令复用同一能力判定，不能复制一套依赖表。
 
 run必须在创建worker前拒绝非TTY；无人值守显式使用worker。启动器不自动migrate、搜索父目录配置或切换到Docker，不因为删去参数而改变数据和配置来源。

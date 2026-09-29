@@ -47,10 +47,7 @@ def empty_status():
 
 
 def test_parser_reuses_cli_parameters_and_preserves_quoted_reason():
-    line = (
-        "resolve bank_transactions abc --version 2 --action retry "
-        '--reason "中文 核实理由" --account-id account-1'
-    )
+    line = 'issues --entity-id "中文 对象"'
     interactive = console.parse_line(line, "synthetic.toml")
     ordinary = cli.parse_command(
         cli.build_parser(), ["--config", "synthetic.toml", *console.shlex.split(line)]
@@ -81,7 +78,7 @@ def test_console_rejects_invalid_commands_without_exiting(line):
         console.parse_line(line, "synthetic.toml")
 
 
-@pytest.mark.parametrize("line", ["help", "help resolve", "sync --help", "help recheck", "help exit"])
+@pytest.mark.parametrize("line", ["help", "help issues", "sync --help", "help recheck", "help exit"])
 def test_console_help_does_not_print_outside_output_proxy(line, capsys):
     with pytest.raises(console.CommandHelp) as result:
         console.parse_line(line, "synthetic.toml")
@@ -404,16 +401,13 @@ def test_real_prompt_session_handles_completion_history_chinese_and_ctrl_c(tmp_p
             await wait_until(lambda: output.getvalue().count("当前没有问题诊断") == 1)
             pipe.send_text("\x1b[A\r")
             await wait_until(lambda: output.getvalue().count("当前没有问题诊断") == 2)
-            pipe.send_text("resolve bank_transactions abc --action retry --reason 中文理由\r")
-            await wait_until(lambda: "处理决定已保存" in output.getvalue())
             pipe.send_text("rech")
             await asyncio.sleep(0.05)
             pipe.send_text("\t\r")
             await wait_until(lambda: "本次安排一次复查" in output.getvalue())
             pipe.send_text("do-not-run-this\x03")
             await asyncio.wait_for(runner, 3)
-            assert [args.command for args in executed] == ["status", "status", "resolve", "recheck"]
-            assert executed[2].reason == "中文理由"
+            assert [args.command for args in executed] == ["status", "status", "recheck"]
             assert "命令未接受" not in output.getvalue()
         finally:
             if not runner.done():

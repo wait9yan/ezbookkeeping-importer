@@ -540,7 +540,8 @@ def test_recheck_cli_uses_local_dispatch_and_preserves_json(config, monkeypatch,
     runtime = SimpleNamespace(store=store, close=lambda: closed.append(True))
     monkeypatch.setattr(cli, "Runtime", lambda *a, **k: runtime)
 
-    def schedule(actual_store):
+    def schedule(actual_store, targets=None):
+        assert targets is None
         assert actual_store is store
         return result
 

@@ -29,6 +29,10 @@ class CommandInputError(ImporterError):
     pass
 
 
+class ConsoleMonitorError(ImporterError):
+    """运行监视故障必须退出交互，不能当作可重试的业务命令错误。"""
+
+
 class CommandHelp(Exception):
     def __init__(self, command=None):
         self.command = command
@@ -56,7 +60,9 @@ def parse_line(line: str, config_path: str):
         if len(words) == 1:
             raise CommandHelp()
         if len(words) != 2 or words[1] not in (*cli.CONSOLE_COMMANDS, "exit"):
-            raise CommandInputError("用法：help [" + "|".join((*cli.CONSOLE_COMMANDS, "exit")) + "]")
+            raise CommandInputError(
+                "用法：help [" + "|".join((*cli.CONSOLE_COMMANDS, "exit")) + "]"
+            )
         raise CommandHelp(words[1])
     if words[0] == "exit":
         if len(words) != 1:
@@ -147,6 +153,31 @@ async def _next_line(session, watchers, stopping: asyncio.Event, active=None):
         await asyncio.gather(prompt, stopped, return_exceptions=True)
 
 
+async def _navigation_wait(awaitable, watchers, stopping):
+    task = asyncio.ensure_future(awaitable)
+    stopped = asyncio.create_task(stopping.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {task, stopped, *watchers}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for observer in watchers:
+            if observer in done:
+                try:
+                    await observer
+                except Exception as exc:
+                    raise ConsoleMonitorError(cli.command_error(exc)["message"]) from exc
+                if not stopping.is_set():
+                    raise ConsoleMonitorError("运行监视已停止")
+        if stopped in done:
+            raise EOFError()
+        return await task
+    finally:
+        for pending in (task, stopped):
+            if not pending.done():
+                pending.cancel()
+        await asyncio.gather(task, stopped, return_exceptions=True)
+
+
 async def interact(
     config_path: str,
     session,
@@ -178,6 +209,25 @@ async def interact(
                 continue
             if active is not None:
                 await active
+            if args.command == "issues":
+                from .issue_flow import IssueFlow
+
+                async def wait(awaitable):
+                    return await _navigation_wait(awaitable, watchers, stop_requested)
+
+                flow = IssueFlow(config_path, session, console, execute, wait)
+                try:
+                    await flow.run(args)
+                except (KeyboardInterrupt, EOFError):
+                    break
+                except Exception as exc:
+                    console.print(
+                        Text("问题导航失败：" + cli.command_error(exc)["message"], style="red")
+                    )
+                    # A completed monitor means the common lifecycle must stop too.
+                    if any(task.done() for task in watchers):
+                        raise
+                continue
             console.print(f"正在执行 {args.command}…")
             active = asyncio.create_task(_execute(args, console, execute))
     finally:

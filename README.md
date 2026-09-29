@@ -69,8 +69,8 @@ uv sync --frozen
 | 命令 | 必需服务配置 |
 | --- | --- |
 | `migrate/status/issues/sync/recheck` | 数据库；不需要配置外部服务，recheck只安排复查 |
-| `resolve` 的本地接纳、忽略、普通重试、确认新建 | 数据库；决定实际执行仍交后台 |
-| `resolve --action link`、`resolve --account-id ...`、`restore-audit` | 数据库与账本 |
+| `issues` 交互中的接纳、忽略、普通重试、确认新建 | 数据库；决定实际执行仍交后台 |
+| `issues` 交互中的候选对比、关联、账户修正，以及 `restore-audit` | 数据库与账本 |
 | `run`、`worker`、`doctor` | 数据库、账本、邮箱；`classification_mode="ai"` 时额外要求模型地址、名称及 Key |
 
 `EBKI_AI_URL` 应填写模型服务的 API 基址，应用追加 `/chat/completions`。如果站点根地址返回 HTML 首页，即使 HTTP 200 也不能通过分类校验；应核对服务实际 API 路径（常见为 `/v1`），不要把网页地址当作 API。
@@ -140,24 +140,12 @@ docker compose logs --tail 100 importer
 docker compose restart importer
 ```
 
-`sync` 提交同步请求，不能把命令返回视为全部入账成功。 `--since` 与 `--until` 必须同时提供，格式为 `YYYY-MM-DD`，包含起止两天；筛选依据是 IMAP 邮件接收日期（INTERNALDATE 的日期部分），不是消费发生日期。区间补扫使用独立持久任务，与普通同步串行执行，不改变历史扫描上界、游标或完成状态；重复请求沿用相同来源去重。省略日期时继续原有全历史／增量流程，不附加日期下限。`status`、`issues` 读取数据库中的进度和异常；`doctor` 负责连接诊断，运行成功也不等于邮件到真实写入的完整验收。异常处理入口为：
+`sync` 提交同步请求，不能把命令返回视为全部入账成功。 `--since` 与 `--until` 必须同时提供，格式为 `YYYY-MM-DD`，包含起止两天；筛选依据是 IMAP 邮件接收日期（INTERNALDATE 的日期部分），不是消费发生日期。区间补扫使用独立持久任务，与普通同步串行执行，不改变历史扫描上界、游标或完成状态；重复请求沿用相同来源去重。省略日期时继续原有全历史／增量流程，不附加日期下限。`status`、`issues` 读取数据库中的进度和异常；`doctor` 负责连接诊断，运行成功也不等于邮件到真实写入的完整验收。异常处理在 `./run` 控制台输入 `issues`。
 
-```sh
-docker compose run --rm importer resolve --help
-docker compose run --rm importer restore-audit --help
-```
+`issues` 使用方向键、Enter 和 Esc 完成分组、对象、操作选择，自动携带对象身份与版本。重复候选支持单笔或本组选中对象的一次复查，复用冻结分类；通过后可能入账，仍重复则暂停。候选对比实时读取账本；关联和确认新建前显示影响，人工判断需要理由。账户修正从现有账户中选择，提交时仍检查币种与状态。邮件忽略或重试作用于整封邮件。未决写入只能记录核实意图，不能重新发送。
 
-`resolve` 支持 `accept-source`（接纳来源）、`confirm-new`（核实候选后确认新建）、`link`（关联已有账单）、`ignore`（明确忽略）和 `retry`（纠正明确失败后重试）。操作引用明确对象类型、对象 ID 和当前版本，并保留最新处理原因；`dispatching`、`unknown` 不能借此绕过结果核实直接重发。待创建记录可在 `retry` 时用 `--account-id` 修正账户；已入账交易不提供此修改。
+状态变化时必须刷新后重新选择，不自动重放原选择。单次 `./run issues` 及 Docker 的 `issues` 仍输出只读 JSON；公开 `resolve` 命令已移除，人工处理统一通过交互菜单。当前诊断没有独立问题 ID，也不提供已解决问题历史。
 
-`issues` 只汇总业务对象的当前问题，输出 `entity_type`、`entity_id`、问题代码和状态/版本；不提供独立数字问题 ID 或已解决问题历史。`resolve` 以对象类型和 ID 定位，具体参数以 `resolve --help` 为准。来源接纳针对 `email_source_item`，交易处理针对 `bank_transactions`，避免把不同实体的相同数字误认为同一对象。
-
-```sh
-docker compose run --rm importer issues --entity-type email_source_item --entity-id 12
-docker compose run --rm importer resolve email_source_item 12 --action accept-source --reason "已核对原邮件来源"
-docker compose run --rm importer resolve bank_transactions AbCdEfGh1234_-XY --version 1 --action link --target-id 123456 --reason "已核对同一笔账本记录"
-```
-
-示例对象 ID 和版本仅作说明；实际使用 issues 输出中的对象类型和 ID；交易与账本任务还须传当前 `--version`，来源、邮件等无版本对象不需要此参数。不能使用旧全局问题 ID。`issues` 不再提供 `--all` 已解决历史查询。
 
 正式邮件入口只有 IMAP，不提供 `import-eml` 命令；原始证据仍保存为 `.eml`。`Fw:`、`Fwd:`、`转发：` 前缀的已知银行主题也会保存原件并尝试解析，原始主题保留；转发邮件须有可信的来源项或人工接纳，不能因转发者通过认证就自动入账。
 
@@ -173,9 +161,9 @@ worker记录采集、解析、分类、写入、核对及恢复事件。正常�
 ./run
 ```
 
-支持 `help`、`status`、`issues`、`sync`、`recheck`、`resolve`、`exit`；业务参数与单次CLI相同，支持Tab补全和本次会话的命令历史。日志从本次启动前的位置继续显示，包含本次 worker 启动事件。
+支持 `help`、`status`、`issues`、`sync`、`recheck`、`exit`；除交互式 issues 外，业务参数与单次CLI相同，支持Tab补全和本次会话的命令历史。日志从本次启动前的位置继续显示，包含本次 worker 启动事件。
 
-交互控制台使用中文摘要和表格显示结果。`status` 展示采集、解析、交易及任务进度；`issues` 默认按原因汇总，区分诊断条数与受影响对象数，并给出下一步操作。需要查看交易详情时使用 `issues --entity-type bank_transactions`，也可沿用 `--entity-id` 定位对象。`help` 显示中文命令说明与最少参数示例。单次CLI（例如 `./run status`）继续输出JSON，便于脚本调用。
+交互控制台使用中文摘要和表格显示结果。`status` 展示采集、解析、交易及任务进度；`issues` 默认进入分组菜单，选择对象后显示可用操作，结果留在界面内，可刷新查看。需要查看交易详情时使用 `issues --entity-type bank_transactions`，也可沿用 `--entity-id` 定位对象。`help` 显示中文命令说明与最少参数示例。单次CLI（例如 `./run status`）继续输出JSON，便于脚本调用。
 
 删除或修正ezBookkeeping中的重复候选后，在控制台执行一次：
 
@@ -189,7 +177,7 @@ recheck
 
 命令执行期间日志仍可显示，重复提交业务命令会明确提示当前忙。独立 `console` 命令和 `quit` 已移除。无人值守运行使用 `./run worker` 或 `docker compose up -d`；只执行一个完整周期可用 `./run worker --once`，该方式也包含实际账本写入。查询和维护使用单次CLI。
 
-`sync` 反馈“已排队”或“已有请求已合并”，不表示采集完成。`recheck` 反馈本次安排、已在处理和跳过数量，不表示已经完成查重或入账。`resolve` 反馈具体处理决定；结果不明时仍明确等待核实，不把保存决定显示为账本写入成功。日志中的“采集完成”“写入尝试已登记”“写入已核实”“既有关联已恢复”分别对应不同阶段。核对结果发布与报告文件导出也分别记录。
+`sync` 反馈“已排队”或“已有请求已合并”，不表示采集完成。`recheck` 反馈本次安排、已在处理和跳过数量，不表示已经完成查重或入账。`issues` 菜单反馈具体处理决定；结果不明时仍明确等待核实，不把保存决定显示为账本写入成功。日志中的“采集完成”“写入尝试已登记”“写入已核实”“既有关联已恢复”分别对应不同阶段。核对结果发布与报告文件导出也分别记录。
 
 日志文件仅由worker写入和轮转，控制台只读尾随；状态与问题仍以数据库为准。修改级别需更新 `config.toml` 顶层 `log_level` 并重启 worker，控制台不能恢复此前未被记录的DEBUG事件。
 

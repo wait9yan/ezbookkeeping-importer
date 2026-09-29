@@ -12,12 +12,20 @@ def is_duplicate_recheck(transaction: dict) -> bool:
     )
 
 
-def request_recheck(store: Store) -> dict[str, int]:
-    candidates = store.all(
-        """SELECT id,decision_version FROM bank_transactions
-        WHERE import_error->>'code' IN (%s,%s) ORDER BY id""",
-        RECHECK_CODES,
-    )
+def request_recheck(store: Store, targets: list[dict] | None = None) -> dict[str, int]:
+    if targets is not None:
+        candidates = [
+            {"id": item["entity_id"], "decision_version": item["version"]}
+            for item in targets
+            if item["entity_type"] == "bank_transactions" and item["code"] in RECHECK_CODES
+        ]
+    else:
+        candidates = store.all(
+            """SELECT id,decision_version FROM bank_transactions
+            WHERE import_error->>'code' IN (%s,%s) ORDER BY id""",
+            RECHECK_CODES,
+        )
+    snapshots = {item["entity_id"]: item for item in targets or []}
     counts = {"scheduled": 0, "already_pending": 0, "skipped": 0}
     for candidate in candidates:
         with store.transaction():
@@ -30,6 +38,14 @@ def request_recheck(store: Store) -> dict[str, int]:
                 or (current.get("import_error") or {}).get("code") not in RECHECK_CODES
                 or current["ledger_transaction_id"] is not None
                 or not (current.get("import_decision") or {}).get("payload")
+            ):
+                counts["skipped"] += 1
+                continue
+            selected = snapshots.get(candidate["id"])
+            if selected and (
+                selected["status"] != current["import_status"]
+                or selected["code"] != current["import_error"]["code"]
+                or selected["detail"] != current["import_error"].get("detail")
             ):
                 counts["skipped"] += 1
                 continue

@@ -6,6 +6,7 @@ from .classify import validate_accounts
 from .maintenance import issues
 from .write import matches
 from .ports import Ledger, Store
+from .issue_interaction import resolution_actions
 
 
 def resolve(
@@ -19,6 +20,7 @@ def resolve(
     target_id: str | None = None,
     account_id: str | None = None,
     code: str | None = None,
+    expected_issue: dict | None = None,
 ):
     if not reason.strip():
         raise ImporterError("a reason is required")
@@ -60,7 +62,13 @@ def resolve(
         "code": code,
     }
     with store.transaction():
+        if expected_issue is not None:
+            key = "report_key" if entity_type == "bank_report" else "id"
+            # entity_type is validated above; lock before comparing the displayed snapshot.
+            store.one(f"SELECT * FROM {entity_type} WHERE {key}=%s FOR UPDATE", (entity_id,))
         current_issues = issues(store, entity_type, entity_id)
+        if expected_issue is not None and expected_issue not in current_issues:
+            raise Conflict("问题状态已经变化，请刷新后重新选择")
         if code:
             current_issues = [item for item in current_issues if item["code"] == code]
         if not current_issues:
@@ -166,6 +174,8 @@ def resolve(
                 raise Conflict(
                     "booked transactions are maintained in ezBookkeeping; resolve settlement task separately"
                 )
+            if action not in resolution_actions(entity_type, transaction):
+                raise ImporterError("unsupported transaction action")
             decision = transaction["import_decision"] or {}
             if action == "link":
                 if (

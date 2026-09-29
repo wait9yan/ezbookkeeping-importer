@@ -58,7 +58,7 @@ ISSUE_LABELS = {
 COMMANDS = {
     "status": ("查看处理状态", "只读：采集、解析、交易、任务及问题概况。", "status"),
     "issues": (
-        "查看当前问题", "只读：默认按原因汇总；加筛选查看对象详情。",
+        "交互处理当前问题", "进入分组、对象和操作菜单；方向键选择，Esc 返回。",
         "issues\nissues --entity-type bank_transactions\nissues --entity-id ID",
     ),
     "recheck": (
@@ -69,12 +69,6 @@ COMMANDS = {
         "安排邮件采集", "安排后台同步，可指定接收日期补扫；新邮件通过检查后可能入账。"
         "不会复查已暂停的重复候选。",
         "sync\nsync --since 2026-09-01 --until 2026-09-30",
-    ),
-    "resolve": (
-        "保存人工处理决定", "修改指定对象；交易和账本任务需当前版本，原因必填。"
-        "retry 会重新处理，交易可能重新分类；confirm-new 允许新建，不能代替正常查重。"
-        "未决写入只记录意图并继续核实。",
-        'resolve bank_transactions ID --version VERSION --action retry --reason "已修正原因"',
     ),
     "exit": ("退出项目", "一起关闭 console 和 worker，等待当前阶段及已接受命令完成。", "exit"),
 }
@@ -119,20 +113,13 @@ def help_text(command=None) -> str:
 def render_help(console: Console, command=None):
     if command is not None:
         console.print(text(help_text(command)))
-        if command == "resolve":
-            actions = table("人工决定", "操作", "用途")
-            for action, title in ACTION_LABELS.items():
-                actions.add_row(text(action), text(title))
-            console.print(actions)
-            console.print(text("先用 issues 筛选查看完整 ID 与版本。关联用 --target-id，"
-                               "重试时修正账户用 --account-id；--code 可定位同一对象的诊断。"))
         return
     commands = table("控制台命令", "命令", "用途")
     for name, (title, _, _) in COMMANDS.items():
         commands.add_row(text(name, "cyan"), text(title))
     console.print(commands)
     console.print(text("help 命令名 查看示例与影响，例如 help recheck。"))
-    console.print(text("status / issues 只读；sync / recheck / resolve 会改变处理状态。"))
+    console.print(text("status 只读；issues 中选择处理动作、sync 和 recheck 会改变处理状态。"))
     console.print(text("exit、Ctrl+C 或 EOF 一起退出 console 和 worker。"))
 
 
@@ -169,7 +156,7 @@ def _next_step(group) -> str:
     if code == "duplicate_check_failed":
         return "检查账本连接，修正查询失败后执行 recheck"
     if code == "source_acceptance":
-        return "核实来源，使用 resolve 接纳"
+        return "进入 issues 核实并接纳来源"
     if code == "reconciliation":
         if group.get("match_status") in ("missing_source_transaction", "missing_statement_evidence"):
             return "资料缺口，补充来源邮件后重新核对"

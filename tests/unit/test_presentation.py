@@ -202,10 +202,10 @@ def test_resolve_reports_decision_and_unknown_intent_separately():
 def test_help_covers_minimal_commands_and_side_effects_without_argparse_dump():
     stream = StringIO()
     display = Console(file=stream, width=100, color_system=None)
-    for command in (None, "recheck", "resolve", "issues", "exit"):
+    for command in (None, "recheck", "issues", "exit"):
         presentation.render_help(display, command)
     value = stream.getvalue()
-    for expected in ("recheck", "一次", "可能入账", "不", "--entity-id ID", "--version VERSION",
-                     "confirm-new", "Ctrl+C", "console 和 worker"):
+    for expected in ("recheck", "一次", "可能入账", "不", "--entity-id ID",
+                     "Ctrl+C", "console 和 worker"):
         assert expected in value
     assert "usage:" not in value and "options:" not in value and "quit" not in value

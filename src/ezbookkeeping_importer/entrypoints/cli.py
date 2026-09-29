@@ -2,11 +2,12 @@ import argparse
 import json
 import re
 import sys
+from typing import Any
 from datetime import date
 
 from pydantic import ValidationError
 
-from ..application import maintenance
+from ..application import maintenance, issue_interaction
 from ..application.collect import request_sync, validate_scan_range
 from ..application.resolve import resolve
 from ..application.recheck import request_recheck
@@ -15,7 +16,7 @@ from ..config import load_settings
 from ..domain.errors import ImporterError, LogPersistenceError
 from .worker import run
 
-CONSOLE_COMMANDS = ("status", "issues", "sync", "recheck", "resolve")
+CONSOLE_COMMANDS = ("status", "issues", "sync", "recheck")
 
 
 def output(value):
@@ -49,19 +50,6 @@ def build_parser(*, interactive=False, parser_class=argparse.ArgumentParser):
     issues = commands.add_parser("issues")
     issues.add_argument("--entity-type")
     issues.add_argument("--entity-id")
-    resolution = commands.add_parser("resolve")
-    resolution.add_argument("entity_type")
-    resolution.add_argument("entity_id")
-    resolution.add_argument("--code")
-    resolution.add_argument("--version", type=int, help="交易及账本任务的当前决定版本")
-    resolution.add_argument(
-        "--action",
-        required=True,
-        choices=["accept-source", "ignore", "link", "retry", "confirm-new"],
-    )
-    resolution.add_argument("--reason", required=True)
-    resolution.add_argument("--target-id")
-    resolution.add_argument("--account-id")
     return parser
 
 
@@ -77,9 +65,13 @@ def parse_command(parser, arguments=None):
 
 def execute_command(args):
     """每次调用独立构建并关闭依赖，CLI 和控制台共享同一用例分发。"""
-    dependency_options = {
-        "command": args.command,
-        "action": getattr(args, "action", None),
+    dependency_options: dict[str, Any] = {
+        "command": "resolve"
+        if getattr(args, "operation", None) in {"candidates", "resolve"}
+        else args.command,
+        "action": "link"
+        if getattr(args, "operation", None) == "candidates"
+        else getattr(args, "action", None),
         "account_id": getattr(args, "account_id", None),
     }
     settings = load_settings(args.config, **dependency_options)
@@ -107,10 +99,17 @@ def _execute(args, runtime):
     if args.command == "status":
         return maintenance.status(store)
     if args.command == "recheck":
-        return request_recheck(store)
+        return request_recheck(store, getattr(args, "targets", None))
     if args.command == "issues":
-        return maintenance.issues(store, args.entity_type, args.entity_id)
-    if args.command == "resolve":
+        if getattr(args, "operation", None) == "detail":
+            return issue_interaction.issue_detail(store, args.selected)
+        if getattr(args, "operation", None) == "candidates":
+            return issue_interaction.issue_candidates(
+                store, runtime.ledger, args.selected, getattr(args, "target_id", None)
+            )
+        if getattr(args, "operation", None) != "resolve":
+            return maintenance.issues(store, args.entity_type, args.entity_id)
+    if args.command == "issues" and getattr(args, "operation", None) == "resolve":
         return resolve(
             store,
             runtime.optional_ledger,
@@ -122,6 +121,7 @@ def _execute(args, runtime):
             args.target_id,
             args.account_id,
             args.code,
+            getattr(args, "selected", None),
         )
     if args.command == "doctor":
         return {
