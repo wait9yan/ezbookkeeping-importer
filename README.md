@@ -28,7 +28,7 @@
 
 目前不支持其他银行模板、CSV/PDF 导入或手工 `.eml` 导入。其他 IMAP 主机可以连接采集，但尚未适配的来源认证会形成待处理问题。月账单用于核对，不会仅凭月账单自动补建缺少日报证据的消费。
 
-> **首次运行前请注意：** 当前版本为 `0.1.0`。启动 `./run` 或 Docker 服务后，会自动处理历史邮件和已有待写任务，并实际写入账本，没有 dry-run 模式。请先核对历史交易、信用卡初始负债和其他导入渠道，避免重复记账。
+> **首次运行前请注意：** 当前版本为 `0.2.0`。启动 `./run` 或 Docker 服务后，会自动处理历史邮件和已有待写任务，并实际写入账本，没有 dry-run 模式。请先核对历史交易、信用卡初始负债和其他导入渠道，避免重复记账。
 
 ## 如何工作
 
@@ -126,11 +126,11 @@ classification_mode = "rules_only"
 
 ## Docker 部署
 
-**[v0.1.0](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.1.0) 已正式发布。** GHCR 镜像支持 Linux AMD64/ARM64，两种架构均已通过匿名拉取验证。Release 提供版本说明，无部署附件；使用仓库中对应版本的部署示例。下面可直接使用预构建镜像部署，也可使用本节末尾的源码构建命令。
+**本节部署流程适用于 [v0.2.0](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.2.0) 及后续兼容版本。** GHCR 镜像支持 Linux AMD64/ARM64，发布前两种架构均需通过镜像验收。Release 提供版本说明，无部署附件；使用仓库中对应版本的部署示例。下面可直接使用预构建镜像部署，也可使用本节末尾的源码构建命令。
 
 发布镜像地址为 `ghcr.io/wait9yan/ezbookkeeping-importer`。使用发布镜像的部署机器只需 Docker Compose，无需安装 Python、uv 或克隆源码。
 
-下面的自动生成配置流程适用于当前源码构建及包含此改动的后续发布镜像；已发布的 `0.1.0` 镜像仍需按该版本文档复制 `config.example.toml` 为 `data/config.toml`。本次改动尚未发布到 GHCR。
+从 `0.2.0` 起，所有部署方式都会自动生成默认业务配置；`0.1.0` 镜像仍需按该版本文档复制 `config.example.toml` 为 `data/config.toml`。
 
 先阅读 [Releases](https://github.com/wait9yan/ezbookkeeping-importer/releases) 中的版本说明，再从对应版本标签的仓库复制 `compose.yaml` 和 `.env.example` 到独立部署目录，并参考该版本的 `docs/operations.md`。首次准备服务连接：
 

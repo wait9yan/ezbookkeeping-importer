@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ezbookkeeping-importer"
-version = "0.1.0"
+version = "0.2.0"
 description = "招商银行邮件导入与核对服务"
 requires-python = ">=3.12"
 dependencies = [

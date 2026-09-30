@@ -102,7 +102,7 @@ uv run --env-file .env ebki status --format text
 
 ## 启动和维护
 
-**[v0.1.0](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.1.0) 已正式发布。** [发布 CI](https://github.com/wait9yan/ezbookkeeping-importer/actions/runs/36671286224) 成功，GHCR 镜像的 Linux AMD64/ARM64 两种架构均已在空 Docker 配置下匿名拉取验证。Release 只提供版本说明，无部署附件；部署示例从对应版本的仓库获取。若选择从源码运行 Docker，先准备本节的配置、外部网络与数据目录，再执行：
+**本节部署流程面向 [v0.2.0](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.2.0) 及后续兼容版本。** 所有 CLI 入口都会自动生成缺失的默认业务配置，GHCR 镜像支持 Linux AMD64/ARM64，发布前均需通过镜像验收。Release 只提供版本说明，无部署附件；部署示例从对应版本的仓库获取。若选择从源码运行 Docker，先准备本节的配置、外部网络与数据目录，再执行：
 
 ```sh
 docker compose -f compose.yaml -f compose.build.yaml build
@@ -128,7 +128,7 @@ sudo chown -R 10001:10001 data
 
 Compose 统一将宿主机 `./data` 挂载到容器 `/app/data`，应用在 `/app` 工作目录下按需创建 `email`、`reports`、`logs` 子目录。宿主机需赋予 `data` 根目录及子目录写权限，以便创建配置和运行文件。特殊部署可调整挂载源，容器目标保持固定。Compose 不另起 PostgreSQL 服务或创建外部网络；目标库由 `migrate` 按上述权限初始化。配置位于 `data/config.toml`（容器内 `/app/data/config.toml`），镜像默认入口在文件缺失时自动创建，随后继续执行原命令；部署只需准备 `.env` 和可写数据目录，无需下载或复制业务示例。生成内容使用程序内置的业务默认值，包括 AI 分类；服务凭据仍只通过环境提供。已有文件不覆盖，个性化业务规则可在生成后编辑。
 
-自动生成配置适用于当前源码构建及包含该改动的后续发布镜像。本次改动尚未发布；已发布的 `0.1.0` 镜像仍需要按对应版本文档准备业务配置。目录权限错误会明确失败，容器不会自动提权修改宿主机权限。
+从 `0.2.0` 起，本地源码、Python 包安装、启动器和 Docker 均自动生成默认配置；`0.1.0` 镜像仍需要按对应版本文档准备业务配置。目录权限错误会明确失败，容器不会自动提权修改宿主机权限。
 
 ```sh
 docker compose pull importer
@@ -192,6 +192,8 @@ Compose采用默认十秒停止期限。程序在邮件批次、单笔交易、�
 回退前先停止新 worker。只有旧镜像仍兼容当前数据库结构时，才把 `EBKI_IMAGE` 改回保存的旧版本/digest，执行拉取、诊断与重建。镜像回退不恢复数据库，也不撤销远端账目；涉及恢复备份时按本文“持久化、备份与恢复”流程先核实远端状态。
 
 ### 镜像构建与发布
+
+`0.2.0` 新增所有部署方式共用的默认配置初始化，默认值随安装包提供；升级保留已有 `data/config.toml`，数据库结构和已有账务行为保持不变。
 
 [v0.1.0](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.1.0) 对应源码 revision `d84d81061829c0bbc66b840b2135f2c9a6a89ccf`；OCI version 为 `0.1.0`，两种架构的 revision 均一致。已验证多架构索引 digest 为 `sha256:365d256180fe51af261fa8fb3fa402cb007763e02edb7c1de9ac91476c1f4e45`，可用于 `EBKI_IMAGE` 的完整 digest 引用。
 
