@@ -13,3 +13,5 @@
 `tests/unit/` 只测纯逻辑和可控边界，`tests/integration/` 验证真实 PostgreSQL 与显式启用的隔离账本。个人邮件仅留在已忽略的 `email/`，夹具采用合成内容。
 
 新增银行时实现解析边界，复用六个业务用例；不要为新银行另建分类或外部写入流程。跨层改动必须追踪输入事实、持久决定、请求、回读及异常投影。
+
+数据库资源由 `migrations/` 追加链提供，`adapters/persistence/migrations.py` 读取脚本、摘要与派生契约；`schema_contract.py` 是生成器和运行时共用的系统目录签名提取器。`scripts/generate-schema-contracts.py` 从完整链生成各版本结构资源，普通构建使用 `--resources-only`，真实PG门禁使用 `--check`。业务层不能复制另一套版本判定或建表SQL，后续结构变化流程见 `docs/database-migrations.md`。

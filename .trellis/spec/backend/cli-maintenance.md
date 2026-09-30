@@ -50,3 +50,7 @@ date/datetime为ISO字符串，Decimal为精确字符串；不接受非有限数
 ## 7. 错误与正确做法
 
 错误：CLI复制处理SQL、引入第二套动作表、持久issue ID、额外RPC或菜单；snapshot驱动数据库字段更新。正确：把快照作为乐观并发前置条件，复用resolve/recheck和同一动作判定；用当前数据库事实决定资格和结果。
+
+## 数据库准备与就绪输出
+
+run/migrate的数据库准备集中在Runtime与PostgresStore，migrate不再在CLI分支重复执行迁移，JSON结果为 `{"schema_version": <实际目标版本>}`。doctor在Runtime构造阶段已只读检查结构，成功结果增加 `schema_ready: true` 与 `schema_version`，保留database和原外部检查范围字段；空库、待升级、漂移、历史摘要错误或版本超前在返回成功结果前明确失败。其他维护命令同样只检查，不自动迁移；普通JSON stdout不得夹入准备阶段日志。

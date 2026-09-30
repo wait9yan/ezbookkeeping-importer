@@ -16,12 +16,12 @@
 
 | 命令 | 能力要求 |
 | --- | --- |
-| migrate | 数据库与显式数据库初始化能力；仅缺库时经同实例维护库创建目标 |
+| migrate | 数据库与版本迁移能力；仅明确缺库时经同实例维护库创建目标 |
 | status、issues、sync、recheck | 数据库；不构造不使用的外部客户端和文件目录；各业务命令独立组装依赖。recheck只安排一次复查，真正查重和写入由worker执行 |
 | issues show、issues resolve 本地动作 | 数据库 |
 | issues candidates、resolve 关联/账户修正；restore-audit | 数据库与账本 |
-| run | 数据库、账本、IMAP、流水线与存储；AI 模式额外要求 AI 服务；run在同一进程构造Runtime并执行worker，不创建控制台或子worker |
-| doctor | 检查完整 worker 连接配置，实际探测仍只包括已有数据库和账本读取；不声称 IMAP/AI 已接通 |
+| run | 数据库、账本、IMAP、流水线与存储；AI 模式额外要求 AI 服务；run在同一进程准备数据库、执行受支持的迁移再执行worker，不创建控制台或子worker |
+| doctor | 检查完整 worker 连接配置，实际探测包括只读迁移历史/结构就绪和账本读取；不声称 IMAP/AI 已接通 |
 
 ## 验证与错误
 
@@ -53,7 +53,7 @@ IMAP 为唯一正式采集渠道，QQ 仅为服务商与专用认证策略；删
 
 TOML顶层log_level默认INFO，接受DEBUG/INFO/WARNING/ERROR/CRITICAL，非法值明确配置错误。run不要求TTY、不读取stdin，非TTY输出结构化运行事件；单次维护默认JSON，可显式--format text。issues show/candidates/resolve及快照限定recheck复用应用层规则，详见[单次维护命令](cli-maintenance.md)。
 
-公开worker/worker --once、console及交互exit入口移除。Runtime默认完整运行能力为run，启动器按显式参数和唯一默认路径读取配置，不自动migrate或切换到Docker。维护进程退出不停止run。
+公开worker/worker --once、console及交互exit入口移除。Runtime默认完整运行能力为run，启动器按显式参数和唯一默认路径读取配置，数据库准备由共用Runtime执行，不切换到Docker。维护进程退出不停止run。
 
 ## 固定服务超时契约
 
@@ -74,16 +74,16 @@ Dockerfile、Compose、CI 或发行包变化均需验证构建到部署的完整
 - 发布校验：`python3 scripts/check-release.py vX.Y.Z --image ghcr.io/OWNER/IMAGE`。
 
 ### 3. 数据与环境契约
-`EBKI_IMAGE` 仅由 Compose 读取，空值采用 latest，支持指定版本或完整 digest；应用不读取它。生产无 build，开发覆盖不拉生产镜像。工作目录 /app、业务进程默认 UID/GID 10001:10001 不变；镜像启动身份为 root，仅用于数据权限准备和降权；统一 ./data:/app/data bind，email/reports/logs 子目录路径不变。Compose仅用简写绑定 `./data:/app/data`，配置随data目录可写；Docker启动入口准备数据权限，所有CLI入口自动创建缺失的默认data/config.toml，具体契约见“配置文件位置”。CLI唯一默认data/config.toml，Docker ENTRYPOINT仅ebki并通过WORKDIR=/app复用该默认；run保持切换项目根目录和参数透传，显式--config覆盖。Compose删除init/stdin_open/tty/stop_grace_period，使用Docker默认停止期限，未决写入在下次启动核实。builder 保留 migrations 符号链接目标，runtime 只依赖安装环境；安装后的 schema.sql 必须等于权威 SQL。
+`EBKI_IMAGE` 仅由 Compose 读取，空值采用 latest，支持指定版本或完整 digest；应用不读取它。生产无 build，开发覆盖不拉生产镜像。工作目录 /app、业务进程默认 UID/GID 10001:10001 不变；镜像启动身份为 root，仅用于数据权限准备和降权；统一 ./data:/app/data bind，email/reports/logs 子目录路径不变。Compose仅用简写绑定 `./data:/app/data`，配置随data目录可写；Docker启动入口准备数据权限，所有CLI入口自动创建缺失的默认data/config.toml，具体契约见“配置文件位置”。CLI唯一默认data/config.toml，Docker ENTRYPOINT仅ebki并通过WORKDIR=/app复用该默认；run保持切换项目根目录和参数透传，显式--config覆盖。Compose删除init/stdin_open/tty/stop_grace_period，使用Docker默认停止期限，未决写入在下次启动核实。builder保留完整迁移资源与链接目标，runtime只依赖安装环境；安装后的迁移链及派生契约必须通过hash门禁。
 
 ### 4. 校验与错误矩阵
 标签格式或 pyproject 版本不符→发布失败；正式 tag 存在→拒绝覆盖；registry 仅明确404代表不存在，403/网络错误不能当作不存在。首次先推唯一构建tag创建package，再检查正式版本tag。latest 是允许更新的正式发布别名，不参与版本不存在校验；仅正式版本发布更新 latest。临时 PG 必须等 TCP 就绪；合成配置必须含 timezone 和 mail.source_id。镜像通过两种架构验证后原样传入发布job，不重建。
 
 ### 5. 正常、基础与错误案例
-正常：同一提交双架构验证后发布不可覆盖的版本标签，同步更新 latest；仓库 Compose 默认 latest，显式 EBKI_IMAGE 可选版本或 digest；Release 自动生成版本说明，不附部署包。基础：migrate 仅使用合成数据库连接运行。错误：使用 worker --once 做探活、把 doctor 视为活性检查、同名版本覆盖或将增量迁移能力归于当前 migrate。
+正常：同一提交双架构验证后发布不可覆盖的版本标签，同步更新 latest；仓库 Compose 默认 latest，显式 EBKI_IMAGE 可选版本或 digest；Release 自动生成版本说明，不附部署包。基础：migrate 仅使用合成数据库连接运行。错误：使用 worker --once 做探活、把 doctor 视为活性检查、同名版本覆盖或改写已发布迁移脚本。
 
 ### 6. 必需验证
-tests/unit/test_release_check.py 覆盖版本、已存在、404、权限及网络失败；test_image_smoke_config.py 通过真实配置边界验证合成配置。镜像 smoke 验证非 root、SQL、时区、生产依赖、统一data卷下配置及三个子目录重建保留、空宿主data bind写入；隔离PG两次migrate/status必须经镜像真实默认入口且不传--config，避免掩盖默认路径漂移。所有后端测试硬超时60秒；CI工作流需 actionlint。
+tests/unit/test_release_check.py 覆盖版本、已存在、404、权限及网络失败；test_image_smoke_config.py 通过真实配置边界验证合成配置。镜像 smoke 验证非 root、SQL、时区、生产依赖、统一data卷下配置及三个子目录重建保留、空宿主data bind写入；隔离PG必须另有未预跑migrate的全新默认run验收；独立两次migrate/status仍经镜像真实入口且不传--config，避免掩盖默认路径漂移。所有后端测试硬超时60秒；CI工作流需 actionlint。
 
 ### 7. 错误与正确做法
 错误：源码镜像测试通过后重新构建发布镜像；镜像已发布但Release失败就删镜像重发。
@@ -101,7 +101,7 @@ tests/unit/test_release_check.py 覆盖版本、已存在、404、权限及网�
 
 ### 1. 范围与触发
 
-本地源码、`./run`、直接 `ebki`、安装包和 Docker 共用 CLI 初始化。首次正式命令在默认文件缺失时创建实际 `config.toml` 并继续原命令，无需用户准备 example 文件。配置生成不会隐式执行数据库迁移。
+本地源码、`./run`、直接 `ebki`、安装包和 Docker 共用 CLI 初始化。首次正式命令在默认文件缺失时创建实际 `config.toml` 并继续原命令，无需用户准备 example 文件。配置生成函数自身不执行迁移；run/migrate随后由共用数据库流程完成准备，其他命令不自动迁移。
 
 ### 2. 签名
 
@@ -138,7 +138,7 @@ CLI 参数解析成功并注册信号后，仅未显式指定 `--config` 时初�
 
 单元覆盖真实默认选择、首次生成、重复及并发无覆盖、非法已有文件保留、权限和 I/O 失败、显式路径严格失败及帮助无写入。启动器保留参数透传和根目录定位，同时验证实际 CLI 初始化。安装后的 wheel/sdist 必须可读默认资源，真实安装 CLI 在空目录生成配置；构建产物不包含实际运行配置或凭据。
 
-双架构镜像从空可写 data 挂载、通过真实默认入口执行 `migrate`、重复迁移及 `status`，不得先写合成配置绕过初始化；读取生成内容与包资源一致。后续生命周期可提供合成业务定制，但不得替代首次生成验收。非 root、PID 1、无 TTY 及停止恢复契约保持原测试强度。
+双架构镜像必须另有空数据卷与缺目标库直接默认run场景，不预跑migrate、不改内置AI配置，核验真实分类HTTP与账本写入；独立migrate/重复迁移/status仍验证默认配置生成与维护接口。读取生成内容与包资源一致。后续生命周期可提供合成业务定制，但不得替代首次生成验收。非 root、PID 1、无 TTY 及停止恢复契约保持原测试强度。
 
 ### 7. 正确与错误做法
 

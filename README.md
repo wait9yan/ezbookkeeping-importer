@@ -28,7 +28,7 @@
 
 目前不支持其他银行模板、CSV/PDF 导入或手工 `.eml` 导入。其他 IMAP 主机可以连接采集，但尚未适配的来源认证会形成待处理问题。月账单用于核对，不会仅凭月账单自动补建缺少日报证据的消费。
 
-> **首次运行前请注意：** 当前源码版本为 `0.2.1`（待发布）。启动 `./run` 或 Docker 服务后，会自动处理历史邮件和已有待写任务，并实际写入账本，没有 dry-run 模式。请先核对历史交易、信用卡初始负债和其他导入渠道，避免重复记账。
+> **首次运行前请注意：** 当前包版本为 `0.2.1`；以下数据库自动迁移说明对应尚未发布的源码改动。启动 `./run` 或 Docker 服务后，会自动处理历史邮件和已有待写任务，并实际写入账本，没有 dry-run 模式。请先核对历史交易、信用卡初始负债和其他导入渠道，避免重复记账。
 
 ## 如何工作
 
@@ -89,7 +89,7 @@ IMAP 主机和端口默认是 `imap.qq.com:993`。`.env` 保存连接信息，`d
 2. **准备外币账户**：有美元消费时，为同一张卡准备 USD 账户；CNY 交易也需要对应 CNY 账户。程序不会在初次入账时自动换算币种。
 3. **创建待分类分类**：确保存在唯一且父子均可用的二级支出分类 `其他杂项 → 待分类`。即使使用纯规则模式也需要它；程序不会自动创建分类。
 
-业务配置会在下一步首次执行 `./run migrate` 时自动创建为 `data/config.toml`，直接使用[程序内置默认值](src/ezbookkeeping_importer/config.toml)。本地源码、已安装的 `ebki` 和 Docker 均使用同一初始化逻辑；已有文件不覆盖。不使用 AI 时，在文件生成后、启动服务前将顶层配置改为：
+业务配置会在首次执行正式命令时自动创建为 `data/config.toml`，直接使用[程序内置默认值](src/ezbookkeeping_importer/config.toml)。本地源码、已安装的 `ebki` 和 Docker 均使用同一初始化逻辑；已有文件不覆盖。不使用 AI 时，在文件生成后、启动服务前将顶层配置改为：
 
 ```toml
 classification_mode = "rules_only"
@@ -99,18 +99,18 @@ classification_mode = "rules_only"
 
 保持 `[mail]` 中的 `source_id` 稳定，它用于识别同一逻辑邮箱的采集位置。
 
-### 4. 初始化并检查
+### 4. 数据库准备与检查
 
 ```sh
 ./run migrate
 ./run doctor
 ```
 
-`migrate` 初始化 importer 数据库。若数据库不存在，会尝试创建连接串中指定的数据库，此时账号需要 `CREATEDB` 和同实例 `postgres` 维护库的连接权限；也可由管理员预建空库。建表及同版本结构校验需要相应 schema 权限和目标数据库的 `CREATE` 权限。
+当前源码的 `run` 与 `migrate` 共用版本化数据库准备流程：明确指定的目标库缺失时尝试创建，空库初始化，已有受支持旧版本按顺序升级。直接启动 `./run` 也会自动准备数据库；上面的单独迁移与检查适合先验证环境、再开始实际导入。
 
-当前只支持空库初始化和同版本重复初始化，不会自动升级旧数据库或清除已有数据。详细权限与初始化说明见[运维文档](docs/operations.md#配置与本地开发)。
+缺库需要 `CREATEDB` 与同实例 `postgres` 维护库的连接权限；初始化需要 schema 建表权限，升级现有对象需要相应所有者/迁移权限。数据库已经是程序要求的版本时，结构检查只读，不额外要求建库或建 schema 权限。已有 v1 库首次升级迁移历史也需要修改结构；普通账号权限不足时，由管理员先运行 `migrate`，再使用普通账号启动。
 
-`doctor` 校验启动配置并只读连接数据库和 ezBookkeeping。它**不连接 IMAP、不调用模型，也不测试实际入账**。
+`doctor` 只读检查启动配置、数据库迁移历史和表结构就绪，以及账本读取连通性；未初始化、待升级或不兼容结构会明确失败。它不执行迁移、不连接 IMAP、不调用模型，也不测试实际入账。自动迁移不会推测修复损坏结构或自动降级。详细权限与升级说明见[运维文档](docs/operations.md#数据库初始化与版本迁移)。
 
 ### 5. 启动并确认结果
 
@@ -132,7 +132,7 @@ classification_mode = "rules_only"
 
 从 `0.2.0` 起，所有部署方式都会自动生成默认业务配置；`0.1.0` 镜像仍需按该版本文档复制 `config.example.toml` 为 `data/config.toml`。
 
-`0.2.1`（待发布）新增 Docker 数据目录权限自动准备，采用启动时 root 初始化、随后普通用户运行的模式。发布说明见 [v0.2.1](docs/releases/v0.2.1.md)，发布前可使用本节末尾的源码构建流程；已发布的 `0.2.0` 仍需在首次部署时执行 `sudo chown -R 10001:10001 data`。
+已发布的 `0.2.1` 新增 Docker 数据目录权限自动准备，采用启动时 root 初始化、随后普通用户运行的模式。发布说明见 [v0.2.1](docs/releases/v0.2.1.md)，本次数据库自动迁移尚未发布，可使用本节末尾的源码构建流程验证；已发布的 `0.2.0` 仍需在首次部署时执行 `sudo chown -R 10001:10001 data`。
 
 先阅读 [Releases](https://github.com/wait9yan/ezbookkeeping-importer/releases) 中的版本说明，再从对应版本标签的仓库复制 `compose.yaml` 和 `.env.example` 到独立部署目录，并参考该版本的 `docs/operations.md`。首次准备服务连接：
 
@@ -146,6 +146,8 @@ mkdir -p data
 Compose **只启动 importer**，连接现有外部网络 `ezbookkeeping`。请准备该网络，并确保 PostgreSQL 和 ezBookkeeping 可从容器访问；实际网络名不同时，修改 `networks.ezbookkeeping.name`。服务地址应填写容器能访问的主机名或 IP，容器内的 `127.0.0.1` 指向 importer 自己。
 
 Compose 统一将 `./data` 挂载到 `/app/data`。新启动入口会先以 root 准备应用所需的目录和文件权限，再通过 `gosu` 切换为 `10001:10001` 执行命令；常见的 `root:root、755` 空目录无需手动改权限。权限修复限于 importer 的配置和 `email`、`reports`、`logs`，会按需修改宿主机文件的所有权和权限，不改文件内容。配置仍由普通 CLI 自动生成，已有配置始终保留。
+
+当前源码中，默认 `run` 还会自动创建缺失的 importer 数据库并执行已提供的迁移；已发布 `0.2.1` 仍需先手动执行 `migrate`。
 
 需要自行管理权限时，可在 Compose 显式设置非 root `user: "UID:GID"`，镜像会保留该身份并跳过 root 权限准备。只读挂载或存储权限禁止修复时明确失败，不自动切换为 root 运行服务。首次初始化和检查：
 
@@ -175,7 +177,7 @@ docker compose logs -f importer
 
 持续暂停执行 `docker compose stop importer`，恢复执行 `docker compose up -d`。保留 `restart: unless-stopped`，Docker 重启会恢复此前未被手动停止的服务。Compose 不设置 `init`、`stdin_open`、`tty` 或 `stop_grace_period`，停止采用 Docker 默认十秒期限。账本、AI 和 IMAP 请求超时固定三十秒，与停止期限独立；十秒内不保证请求完成，超过期限可能强制终止，下次启动先核实未确定的账本写入，无法确认的保留为 `UNKNOWN`，不会盲目重发。`docker logs` 和 `data/logs/worker.jsonl` 提供结构化运行事件。
 
-`migrate` 只支持空库初始化与同结构校验；`doctor` 不检查 worker 活性或 IMAP/AI 连通性。
+当前源码的 `migrate` 支持初始化及有明确脚本的顺序升级；升级需旧 worker 停止。`doctor` 不检查 worker 活性或 IMAP/AI 连通性。
 
 升级前执行 `docker compose pull importer` 拉取最新正式镜像，停止旧 worker，配对备份数据库、邮件和配置，确认版本兼容后再校验并执行 `docker compose up -d --no-build` 应用更新；仅拉取镜像不会更新正在运行的容器。复用原数据库和 `data/`，不要并行运行两个 worker。回退镜像不会撤销已写入 ezBookkeeping 的交易，操作步骤见[升级与回退](docs/operations.md#镜像升级与回退)。
 

@@ -21,9 +21,9 @@
 
 需要独立的 PostgreSQL 数据库，以及用户已有的 ezBookkeeping 服务。可以复用 PostgreSQL 实例，但不要使用 ezBookkeeping 业务数据库保存 importer 状态。
 
-`migrate` 会初始化连接串指定的 importer 数据库：目标库存在时直接迁移；明确不存在时，使用同一账号连接同实例的 `postgres` 维护库，创建 `EBKI_DATABASE_URL` 中显式指定的数据库，再回连建表。首次建库需要该账号具备 `CREATEDB` 权限及维护库连接权限；已有库首次初始化需要连接和目标 schema 建表权限；同版本重复初始化会在同一事务的临时 schema 中从权威 SQL 构造预期结构并比对列、约束、索引及表列注释，因此维护账号还需目标数据库的 CREATE 权限。临时 schema 检查后删除，失败回滚；普通运行命令不执行该校验。权限不足会明确报错，可由管理员预建目标库后重试。应用不创建角色，其他命令不隐式建库；认证或网络失败也不会触发创建。
+当前源码的 run 与 migrate 共用数据库准备：只在明确缺库时尝试创建连接串显式指定的目标，空库初始化，受支持旧版本依次迁移；已有最新结构通过只读系统目录校验，不再创建临时 schema。创建与升级权限、事务和故障边界见[数据库初始化与版本迁移](#数据库初始化与版本迁移)。其他命令不建库或迁移，认证/网络失败不触发创建；应用不创建角色或自动授予权限。已发布 0.2.1 的 run 仍需部署者先执行 migrate。
 
-数据库采用九表结构：`email_sync_checkpoint`、`email_source_item`、`email`、`bank_report`、`bank_transactions`、`background_task`、`ledger_write_attempt`、`bank_statement_reconciliation`、`schema_version`。邮件原件、来源认证、报告事实、导入决定及核对结果分别明确归属；所有表和字段有中文数据库注释。只支持空库初始化与同版本重复初始化，旧或不完整结构明确失败，不自动升级或清库；旧测试环境应使用新的空数据库或空 schema。
+数据库采用九表结构：`email_sync_checkpoint`、`email_source_item`、`email`、`bank_report`、`bank_transactions`、`background_task`、`ledger_write_attempt`、`bank_statement_reconciliation`、`schema_version`。邮件原件、来源认证、报告事实、导入决定及核对结果分别明确归属；所有表和字段有中文数据库注释。当前源码支持空库初始化及受版本迁移链支持的旧库升级；不完整或未经登记的结构明确失败，不自动修复或清库。已发布旧版本按其对应文档操作。
 
 配置分为两个明确来源：
 
@@ -40,12 +40,12 @@ uv sync --frozen
 先填写 `.env` 的数据库连接。`migrate`、`status`、`issues` 和 `sync` 不要求账本、邮箱或模型凭据；启动前再补齐对应服务。首次 `migrate` 自动生成默认配置并继续初始化数据库；如需修改分类模式或个性化业务规则，可在生成后、启动服务前编辑该文件。项目启动器固定使用项目目录的 `.env` 和默认 `data/config.toml`，日常只需：
 
 ```sh
-./run migrate   # 首次初始化
-./run doctor    # 检查配置与只读连通性
+./run migrate   # 可选：先准备数据库，尚不开始导入
+./run doctor    # 只读检查配置、结构就绪与账本连通性
 ./run           # 在单进程中持续导入，不读取终端输入
 ```
 
-`./run` 通过 uv 加载项目 `.env`，有参数时透传给 `ebki`；例如 `./run status`、`./run issues`。默认配置路径无需重复指定；需要其他配置时使用 `./run --config /path/to/config.toml run`。启动不会自动初始化数据库。
+`./run` 通过 uv 加载项目 `.env`，有参数时透传给 `ebki`；例如 `./run status`、`./run issues`。默认配置路径无需重复指定；需要其他配置时使用 `./run --config /path/to/config.toml run`。当前源码的 run 会自动准备数据库并执行受支持的版本迁移；已发布 0.2.1 尚不具备该行为，仍需先执行 migrate。
 
 **普通 `uv run` 不会替本项目自动加载 `.env`。** 原始命令仍可使用 `uv run --env-file .env ebki run`；应用只读取 TOML 和进程环境，不另设 dotenv 加载器，已有 shell 环境变量优先。直接执行已安装的 `ebki` 时，调用方负责注入环境。`.env` 已被忽略，不会进入源码发行包或 Docker 镜像；`.env.example` 是可分享的空值模板。
 
@@ -82,7 +82,21 @@ uv run --env-file .env ebki status --format text
 
 `EBKI_AI_URL` 应填写模型服务的 API 基址，应用追加 `/chat/completions`。如果站点根地址返回 HTML 首页，即使 HTTP 200 也不能通过分类校验；应核对服务实际 API 路径（常见为 `/v1`），不要把网页地址当作 API。
 
-`doctor` 检查完整启动配置以及数据库、账本读取连通性；不把配置存在当成 IMAP 或模型调用验证。`classification_mode="rules_only"` 时不要求模型服务配置，也不会调用模型。
+`doctor` 检查完整启动配置、数据库迁移历史与结构就绪，以及账本读取连通性；不把配置存在当成 IMAP 或模型调用验证。`classification_mode="rules_only"` 时不要求模型服务配置，也不会调用模型。
+
+### 数据库初始化与版本迁移
+
+开发者添加后续结构变更时，按[数据库结构变更与发布](database-migrations.md)追加迁移并再生成校验资源。
+
+当前源码的 run 与 migrate 使用同一迁移链。缺库时只尝试创建 `EBKI_DATABASE_URL` 明确指定的独立 importer 数据库；密码、DNS、网络等失败不触发建库。新库从初始版本依次执行迁移，旧库只执行尚未应用的版本，完成并校验后才开始业务恢复与导入。正式镜像版本是否支持该行为以对应 Release 为准。
+
+迁移脚本按版本追加，已发布脚本不得改写。每个版本的 DDL、必要数据转换及版本/校验和记录在同一事务提交；一版失败回滚本版，已成功的前序版本保留，下次从最后成功版本继续。脚本被改写、历史不完整、结构漂移或数据库版本比程序新时明确失败，不自动推测 ALTER、补表、删数据或降级。
+
+权限按阶段要求：缺库需维护库 CONNECT 与 CREATEDB；初始化需目标 schema 建表权限；升级既有表通常需对象所有者或迁移角色。容器 root 身份不能替代 PostgreSQL 权限。最新库仅只读校验，无须持续提供 DDL 权限。已发布 v1 的迁移历史没有脚本校验和，需要严格校验基线后完成一次元数据升级；普通账号无修改权限时，管理员先执行同一 migrate，再用普通账号运行。
+
+启动准备和独立 migrate 都与业务 worker 排他。升级前停止旧 importer，确认没有旧版本维护操作，再备份数据库及证据目录；不能在旧 worker 仍运行时升级，也不承诺混合版本滚动运行。数据库暂时未就绪仍明确退出，Docker 按现有 restart 策略重试；同一 Compose 中可自行配置数据库健康依赖，使用外部网络时不能硬编码一个并不存在的 postgres 服务依赖。
+
+大规模回填、非事务操作和破坏性结构变更需版本专项维护方案，不作为默认启动时可自动执行的任意 SQL。应用回退只有在旧程序支持当前迁移历史和结构时成立，切换镜像不会回退数据库或撤销账本写入。
 
 ### 业务初始化
 
@@ -113,11 +127,11 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --no-build
 
 源码部署的启动、恢复、重建及新建维护容器均继续使用 `docker compose -f compose.yaml -f compose.build.yaml` 前缀，确保选择本地镜像；查询已运行容器可直接 `docker compose exec -T importer ebki ...`。下面不带构建覆盖的 GHCR 拉取、up/run 命令用于已发布的预构建镜像。
 
-生产 Compose 默认从 GHCR 拉取 `latest` 预构建镜像，支持 Linux AMD64/ARM64；可在 `.env` 中通过 `EBKI_IMAGE` 指定完整版本或 digest 引用。Dockerfile 使用 Python `3.12.13` 和 uv `0.11.21` 多阶段构建，以锁文件安装生产依赖并校验一致性，运行镜像不携带 uv。首次启动前显式初始化数据库；run 不代替初始化步骤。Compose 自动读取项目 `.env`，并通过 `environment` 注入与本地相同的变量；必需凭据由应用按命令检查，因此可以在尚未填写邮箱和模型凭据时运行迁移。
+生产 Compose 默认从 GHCR 拉取 `latest` 预构建镜像，支持 Linux AMD64/ARM64；可在 `.env` 中通过 `EBKI_IMAGE` 指定完整版本或 digest 引用。Dockerfile 使用 Python `3.12.13` 和 uv `0.11.21` 多阶段构建，以锁文件安装生产依赖并校验一致性，运行镜像不携带 uv。当前源码默认 run 自动准备数据库，单独 migrate 可提前完成准备；已发布 0.2.1 仍需首次显式初始化。Compose 自动读取项目 `.env`，并通过 `environment` 注入与本地相同的变量；必需凭据由应用按命令检查，因此可以在尚未填写邮箱和模型凭据时运行迁移。
 
 部署时把服务地址改为已有 Docker 网络内可访问的名称，例如 `http://ezbookkeeping:8080`，不能沿用容器内的 `127.0.0.1`。Compose 使用已有外部网络 `ezbookkeeping`；实际名称不同时直接修改 `compose.yaml` 中的 `networks.ezbookkeeping.name`。
 
-当前源码镜像按 PostgreSQL 官方镜像的模式处理目录权限：镜像内 `ebki` 入口先以 root 完成必要的权限准备，然后通过 `gosu` 切换为 `10001:10001` 执行原 CLI。默认启动、新建维护容器和 `docker compose exec … ebki` 使用同一入口。该改动计划随 `0.2.1` 发布，目前待发布；已发布 `0.2.0` 仍需手动准备写权限。
+当前源码镜像按 PostgreSQL 官方镜像的模式处理目录权限：镜像内 `ebki` 入口先以 root 完成必要的权限准备，然后通过 `gosu` 切换为 `10001:10001` 执行原 CLI。默认启动、新建维护容器和 `docker compose exec … ebki` 使用同一入口。该权限改动已随 `0.2.1` 发布；`0.2.0` 仍需手动准备写权限。数据库启动自动迁移属于当前源码的新改动，尚未发布。
 
 使用新入口时，首次部署只需准备挂载目录：
 
@@ -127,7 +141,7 @@ mkdir -p data
 
 如需以宿主机当前用户运行，用 `id -u` 和 `id -g` 查看 ID，在 `compose.yaml` 的 `services.importer` 下显式设置非 root `user: "实际UID:实际GID"`，入口会直接保留该身份，不尝试提权或修改所有权；部署者需确保挂载目录允许该身份读写。root 启动只负责权限准备，正式业务进程不会以 root 持续运行。显式覆盖 `--entrypoint` 会绕过这套入口，诊断命令需自行选择运行身份。
 
-Compose 统一将宿主机 `./data` 挂载到容器 `/app/data`，应用在 `/app` 工作目录下使用 `email`、`reports`、`logs` 子目录。权限准备按命令需求执行：维护命令只处理默认配置所需的权限，后台运行还准备三个运行子目录及已有应用文件；权限已满足的对象不修改，不覆盖配置或证据内容，不处理数据根目录中的其他文件。修复会改变相关宿主机对象的所有权或 owner 权限，不沿符号链接修改其他位置。特殊部署可调整挂载源，容器目标保持固定。Compose 不另起 PostgreSQL 服务或创建外部网络；目标库由 `migrate` 按上述权限初始化。配置位于 `data/config.toml`（容器内 `/app/data/config.toml`），仍由降权后的共用 CLI 在缺失时创建，再继续执行原命令。生成内容使用程序内置默认值，包括 AI 分类；服务凭据仍只通过环境提供。
+Compose 统一将宿主机 `./data` 挂载到容器 `/app/data`，应用在 `/app` 工作目录下使用 `email`、`reports`、`logs` 子目录。权限准备按命令需求执行：维护命令只处理默认配置所需的权限，后台运行还准备三个运行子目录及已有应用文件；权限已满足的对象不修改，不覆盖配置或证据内容，不处理数据根目录中的其他文件。修复会改变相关宿主机对象的所有权或 owner 权限，不沿符号链接修改其他位置。特殊部署可调整挂载源，容器目标保持固定。Compose 不另起 PostgreSQL 服务或创建外部网络；当前源码由 run/migrate 共用流程按上述权限准备目标库。配置位于 `data/config.toml`（容器内 `/app/data/config.toml`），仍由降权后的共用 CLI 在缺失时创建，再继续执行原命令。生成内容使用程序内置默认值，包括 AI 分类；服务凭据仍只通过环境提供。
 
 从 `0.2.0` 起，本地源码、Python 包安装、启动器和 Docker 均自动生成默认配置；`0.1.0` 镜像仍需要按对应版本文档准备业务配置。新增的权限准备仅适用于 Docker 入口，本地 CLI 不提权。帮助命令不修改数据目录；只读挂载上的维护命令直接降权，由原 CLI 判断配置能否读取，不尝试修改所有权，已有可读配置无需目录写权限。只读挂载、NAS ACL 等禁止必要修复时会明确失败，不能视为已初始化成功。
 
@@ -185,7 +199,7 @@ docker compose restart importer
 
 1. 阅读最新正式版本的 数据库结构说明，保留 `.env` 的 `EBKI_IMAGE` 为空并执行 `docker compose pull importer` 拉取 `latest`；需要固定目标版本时将该变量设为完整版本或 digest 引用。记录当前运行镜像的版本或 digest，供兼容性允许时回退。拉取失败时先解决问题，仍在运行的旧容器不受影响。
 2. 执行 `docker compose stop importer`，确认旧 worker 已停止，且没有并发维护写入，再配对备份 importer 数据库、原始邮件和配置。
-3. 对声明兼容的版本执行 `docker compose run --rm importer migrate` 与 `docker compose run --rm importer doctor`。当前 `migrate` 只支持初始化及同结构校验；结构不兼容时会失败，不得通过删库绕过。未来发生 schema 变化的版本必须另行提供迁移方案。
+3. 对声明兼容的版本执行 `docker compose run --rm importer migrate` 与 `docker compose run --rm importer doctor`。当前源码的 migrate 与 run 使用同一版本迁移流程；迁移完成后 doctor 只读确认就绪。已发布旧镜像按该版本说明操作，结构漂移不可通过删库绕过。
 4. 全部检查成功后，执行 `docker compose up -d --no-build` 应用更新；仅拉取不会替换运行中的容器。通过 `status`、`issues` 和日志核查恢复情况。
 
 Compose采用默认十秒停止期限。程序在邮件批次、单笔交易、核实任务和报告边界响应停止；正在进行的网络请求仍保留原30秒超时，十秒内不保证完成。超时强杀后，同步任务重新排队，已提交数据保留；账本写入先转UNKNOWN并在下次启动核实，不自动重发。登记后尚未发送的任务也可能待核实，远端查不到不足以证明未发送。报告JSON可能暂时滞后于数据库，强杀可能遗留临时文件；不承诺所有状态和派生文件自动立即恢复。
@@ -194,7 +208,7 @@ Compose采用默认十秒停止期限。程序在邮件批次、单笔交易、�
 
 ### 镜像构建与发布
 
-`0.2.1` 为待发布的 Docker 权限修复版本，版本说明和升级步骤见 [v0.2.1](releases/v0.2.1.md)。
+`0.2.1` 为已发布的 Docker 权限修复版本，版本说明和升级步骤见 [v0.2.1](releases/v0.2.1.md)。
 
 `0.2.0` 新增所有部署方式共用的默认配置初始化，默认值随安装包提供；升级保留已有 `data/config.toml`，数据库结构和已有账务行为保持不变。
 
@@ -206,7 +220,7 @@ GitHub Actions 对 PR、主分支和版本标签运行验证。正式版本标�
 
 GHCR package 已设为 Public，v0.1.0 的 AMD64/ARM64 镜像均已验证未登录拉取成功。部署端拉取失败应检查 package 权限和网络，不在生产机器自动回退为源码构建。
 
-CI 对 PR 和主分支执行验证，不发布；版本标签触发的流程在两种架构上验证实际构建镜像，确认 CLI、依赖、时区、非 root 写入、包内 SQL 以及隔离 PostgreSQL 初始化与重复校验，通过后才发布多架构镜像并创建自动生成版本说明的正式 Release，不附部署压缩包。已验证镜像通过内部 artifact 传递给发布 job，不重新构建。v0.1.0 的远端发布流程已成功完成。`schema.sql` 在源码中是链接到 `migrations/001_initial.sql` 的符号链接，构建阶段不能遗漏目标；最终安装环境必须包含可读 SQL。
+CI 对 PR 和主分支执行验证，不发布；版本标签触发的流程在两种架构上验证实际构建镜像，确认 CLI、依赖、时区、非 root 写入、包内 SQL 以及隔离 PostgreSQL 初始化与重复校验，通过后才发布多架构镜像并创建自动生成版本说明的正式 Release，不附部署压缩包。已验证镜像通过内部 artifact 传递给发布 job，不重新构建。v0.1.0 的远端发布流程已成功完成。当前源码的构建阶段不能遗漏完整迁移链及其链接目标，最终安装环境必须包含可读 SQL 和匹配的结构契约；仅检查初始 SQL 不足以证明升级资源完整。
 
 镜像发布和 GitHub Release 创建分为独立 job。以下是条件失败场景的恢复流程，当前没有实际远端发布失败的验收记录。若镜像已发布而 Release 步骤失败，先检查对应 Release 是否已经创建：
 
