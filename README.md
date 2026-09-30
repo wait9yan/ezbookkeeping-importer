@@ -163,7 +163,7 @@ docker compose run --rm importer status
 docker compose logs --tail 100 importer
 ```
 
-容器默认运行单进程 `ebki run`，不依赖终端和标准输入。维护使用独立命令，执行完退出，不影响后台导入：
+容器默认运行单进程 `ebki run`，不依赖终端和标准输入；Compose 继承镜像默认命令，不重复设置 `command`。维护使用独立命令，执行完退出，不影响后台导入：
 
 ```sh
 docker compose exec -T importer ebki status
@@ -171,7 +171,7 @@ docker compose exec -T importer ebki issues
 docker compose logs -f importer
 ```
 
-持续暂停执行 `docker compose stop importer`，恢复执行 `docker compose up -d`。保留 `restart: unless-stopped`，Docker 重启会恢复此前未被手动停止的服务。Compose 不设置 `init`、`stdin_open`、`tty` 或 `stop_grace_period`，停止采用 Docker 默认十秒期限；超过期限可能强制终止，下次启动先核实未确定的账本写入，无法确认的保留为 `UNKNOWN`，不会盲目重发。`docker logs` 和 `data/logs/worker.jsonl` 提供结构化运行事件。
+持续暂停执行 `docker compose stop importer`，恢复执行 `docker compose up -d`。保留 `restart: unless-stopped`，Docker 重启会恢复此前未被手动停止的服务。Compose 不设置 `init`、`stdin_open`、`tty` 或 `stop_grace_period`，停止采用 Docker 默认十秒期限。账本、AI 和 IMAP 请求超时固定三十秒，与停止期限独立；十秒内不保证请求完成，超过期限可能强制终止，下次启动先核实未确定的账本写入，无法确认的保留为 `UNKNOWN`，不会盲目重发。`docker logs` 和 `data/logs/worker.jsonl` 提供结构化运行事件。
 
 `migrate` 只支持空库初始化与同结构校验；`doctor` 不检查 worker 活性或 IMAP/AI 连通性。
 
@@ -179,15 +179,16 @@ docker compose logs -f importer
 
 本地 `./run` 与 Docker 默认使用 `data/config.toml`，可通过 `--config` 显式指定其他文件。`.env` 和可分享的 `config.example.toml` 位于根目录。
 
-从源码开发时，显式使用构建覆盖文件：
+当前从源码构建时，准备上述配置、外部网络和数据目录后，显式使用构建覆盖文件：
 
 ```sh
 docker compose -f compose.yaml -f compose.build.yaml build
 docker compose -f compose.yaml -f compose.build.yaml run --rm importer migrate
+docker compose -f compose.yaml -f compose.build.yaml run --rm importer doctor
 docker compose -f compose.yaml -f compose.build.yaml up -d --no-build
 ```
 
-源码构建同样需要准备配置、外部网络和持久化目录。镜像发布维护说明见[镜像构建与发布](docs/operations.md#镜像构建与发布)。
+源码构建后，启动、恢复、重建或新建维护容器均继续使用 `docker compose -f compose.yaml -f compose.build.yaml` 前缀，确保选择本地镜像；不带构建覆盖的 `pull/up/run` 命令适用于发布镜像。查询已运行容器仍可使用 `docker compose exec -T importer ebki ...`。镜像发布维护说明见[镜像构建与发布](docs/operations.md#镜像构建与发布)。
 
 ## 日常使用
 
@@ -240,7 +241,7 @@ AI 分类会把交易内部标识、商户文本和候选分类的 ID、完整�
 
 邮件和数据库包含私人账务信息，应用没有提供静态数据加密。`.env`、实际 `data/config.toml` 和运行数据已被 Git 忽略，分享问题时仍需对日志和邮件样本脱敏。
 
-备份应在停止 worker、确保没有并发维护写入后，配对保存 **importer 数据库、邮件原件与配置**。恢复较早备份时，先执行 `./run restore-audit` 并核实远端已有交易，再恢复自动运行。该命令不会创建远端交易，但不能代替完整的历史核对。具体流程和限制见[备份与恢复](docs/operations.md#持久化备份与恢复)。
+备份应在停止 run 后台服务、确保没有并发维护写入后，配对保存 **importer 数据库、邮件原件与配置**。恢复较早备份时，先执行 `./run restore-audit` 并核实远端已有交易，再恢复自动运行。该命令不会创建远端交易，但不能代替完整的历史核对。具体流程和限制见[备份与恢复](docs/operations.md#持久化备份与恢复)。
 
 ## 常见问题
 

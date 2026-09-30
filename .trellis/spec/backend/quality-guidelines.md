@@ -7,9 +7,9 @@
 ```sh
 uv sync --frozen
 uv run python -c 'import subprocess; subprocess.run(["pytest", "tests/unit", "-q"], timeout=60, check=True)'
-uv run ruff check src tests
-uv run mypy src
-uv run python -m build
+uv run ruff check src tests scripts
+uv run mypy src scripts
+uv build
 ```
 
 所有后端测试命令整体设置 60 秒硬超时。需要网络的本机隔离数据库验证可能需要沙箱授权；失败应明确说明，不能用跳过测试当作通过。
@@ -30,3 +30,11 @@ uv run python -m build
 ## 多进程数据库测试连接
 
 隔离PostgreSQL夹具必须向子进程传递原始`isolated_dsn`，保留随机schema选项与测试凭据。`connection.info.dsn`会移除密码，不能据此重建认证连接；也不要为使测试通过而关闭数据库认证。父子锁与收尾测试必须在要求密码的临时数据库实际执行。连接串只在测试进程和临时配置中传递，不打印或提交凭据。
+
+## 当前契约与历史证据
+
+任务的 PRD、设计和契约描述当前已确认方案，实施流水和验收记录标注日期、验证对象与范围。方案变化后同步有效契约；历史快照放入 task/revisions 并注明已被替代，不作为实现或检查上下文清单的当前来源。当前 implement.md 保持可直接加载的执行摘要，完整历史流水单独保存并链接，避免历史内容挤占上下文或成为第二份有效计划。
+
+完成摘要分别列明实现、隔离验证、生产验收、远端发布和 Git 收尾的状态。只在源码构建与隔离镜像通过时，不能写成远端 CI、GHCR、Release 或生产持续运行已通过。测试数量属于具体批次，保留旧计数并链接最新证据，不把历史数值覆盖成当前值。
+
+例如，2026-09-30 首发配置清理批次的 498 项单元测试和双架构镜像验证引用 console-worker-lifecycle/validation.md 的首发配置清理记录；此前 189 项 PostgreSQL 集成作为其日期批次证据保留。不能把曾经的部署配置或未启动生产进程的结果改写为当前持续运行验收。

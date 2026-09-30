@@ -1,51 +1,5 @@
-# State Management
+# 前端状态管理
 
-> How state is managed in this project.
+当前不适用。项目首期为 Python 后台导入服务与单次 CLI，没有独立网页或前端包。开发规范见[后端索引](../backend/index.md)，终端展示与维护接口见[单次维护命令](../backend/cli-maintenance.md)。
 
----
-
-## Overview
-
-<!--
-Document your project's state management conventions here.
-
-Questions to answer:
-- What state management solution do you use?
-- How is local vs global state decided?
-- How do you handle server state?
-- What are the patterns for derived state?
--->
-
-(To be filled by the team)
-
----
-
-## State Categories
-
-<!-- Local state, global state, server state, URL state -->
-
-(To be filled by the team)
-
----
-
-## When to Use Global State
-
-<!-- Criteria for promoting state to global -->
-
-(To be filled by the team)
-
----
-
-## Server State
-
-<!-- How server data is cached and synchronized -->
-
-(To be filled by the team)
-
----
-
-## Common Mistakes
-
-<!-- State management mistakes your team has made -->
-
-(To be filled by the team)
+本文件保留作为适用范围说明，不定义未实现的前端约定；后续实际新增前端时再按技术栈补充。新增或更新规范使用简体中文，代码标识符和命令保持原文。

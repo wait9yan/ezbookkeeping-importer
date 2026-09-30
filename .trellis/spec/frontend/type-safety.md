@@ -1,51 +1,5 @@
-# Type Safety
+# 前端类型安全
 
-> Type safety patterns in this project.
+当前不适用。项目首期为 Python 后台导入服务与单次 CLI，没有独立网页或前端包。开发规范见[后端索引](../backend/index.md)，终端展示与维护接口见[单次维护命令](../backend/cli-maintenance.md)。
 
----
-
-## Overview
-
-<!--
-Document your project's type safety conventions here.
-
-Questions to answer:
-- What type system do you use?
-- How are types organized?
-- What validation library do you use?
-- How do you handle type inference?
--->
-
-(To be filled by the team)
-
----
-
-## Type Organization
-
-<!-- Where types are defined, shared types vs local types -->
-
-(To be filled by the team)
-
----
-
-## Validation
-
-<!-- Runtime validation patterns (Zod, Yup, io-ts, etc.) -->
-
-(To be filled by the team)
-
----
-
-## Common Patterns
-
-<!-- Type utilities, generics, type guards -->
-
-(To be filled by the team)
-
----
-
-## Forbidden Patterns
-
-<!-- any, type assertions, etc. -->
-
-(To be filled by the team)
+本文件保留作为适用范围说明，不定义未实现的前端约定；后续实际新增前端时再按技术栈补充。新增或更新规范使用简体中文，代码标识符和命令保持原文。

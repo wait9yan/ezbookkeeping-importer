@@ -1,51 +1,5 @@
-# Quality Guidelines
+# 前端质量验证
 
-> Code quality standards for frontend development.
+当前不适用。项目首期为 Python 后台导入服务与单次 CLI，没有独立网页或前端包。开发规范见[后端索引](../backend/index.md)，终端展示与维护接口见[单次维护命令](../backend/cli-maintenance.md)。
 
----
-
-## Overview
-
-<!--
-Document your project's quality standards here.
-
-Questions to answer:
-- What patterns are forbidden?
-- What linting rules do you enforce?
-- What are your testing requirements?
-- What code review standards apply?
--->
-
-(To be filled by the team)
-
----
-
-## Forbidden Patterns
-
-<!-- Patterns that should never be used and why -->
-
-(To be filled by the team)
-
----
-
-## Required Patterns
-
-<!-- Patterns that must always be used -->
-
-(To be filled by the team)
-
----
-
-## Testing Requirements
-
-<!-- What level of testing is expected -->
-
-(To be filled by the team)
-
----
-
-## Code Review Checklist
-
-<!-- What reviewers should check -->
-
-(To be filled by the team)
+本文件保留作为适用范围说明，不定义未实现的前端约定；后续实际新增前端时再按技术栈补充。新增或更新规范使用简体中文，代码标识符和命令保持原文。

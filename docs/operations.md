@@ -96,7 +96,7 @@ uv run --env-file .env ebki status --format text
 4. 当前支持 CNY 与 USD，美元需要对应 USD 子账户；同一张卡只有 USD 子账户时，其 CNY 消费不能自动写入 USD 账户。首次入账不进行汇率换算。
 5. 保持 `mail.source_id` 稳定。IMAP 来源认证按连接主机自动选择：当前 `imap.qq.com` 使用 QQ 收件链及 SPF/DKIM/DMARC 结果检查，通过后自动接纳；不自行执行 DKIM 公钥验签。来源缺失、失败或无法判断时进入异常处理。
 
-启动 worker 后自动采集、解析、分类、匹配账户、查重并写入通过校验的交易，包括已有待写任务。缺少配置、匹配歧义或结果不明的记录保留为异常。
+启动 run 后台服务后自动采集、解析、分类、匹配账户、查重并写入通过校验的交易，包括已有待写任务。缺少配置、匹配歧义或结果不明的记录保留为异常。
 
 日常自动采集使用 IMAP，主机、端口和凭据由环境变量指定，无人工接纳运行模式或来源策略开关。目前内置 QQ 来源认证；其他主机仍能连接采集，但尚未适配的认证会明确产生来源异常，不能将 QQ 邮件头直接当成其他邮箱的可信依据。来源认证和人工接纳绑定具体 IMAP 来源项。同一业务来源、同一原件只要存在可信或已接纳来源项即可继续处理，不改写其他位置的认证结论。
 
@@ -104,7 +104,18 @@ uv run --env-file .env ebki status --format text
 
 ## 启动和维护
 
-生产 Compose 默认从 GHCR 拉取 `latest` 预构建镜像，支持 Linux AMD64/ARM64；可在 `.env` 中通过 `EBKI_IMAGE` 指定完整版本或 digest 引用。Dockerfile 使用 Python `3.12.13` 和 uv `0.11.21` 多阶段构建，以锁文件安装生产依赖并校验一致性，运行镜像不携带 uv。首次启动前显式迁移；worker 不代替迁移步骤。Compose 自动读取项目 `.env`，并通过 `environment` 注入与本地相同的变量；必需凭据由应用按命令检查，因此可以在尚未填写邮箱和模型凭据时运行迁移。
+**当前尚未首发。** 本地包构建与 Linux AMD64/ARM64 镜像验收已通过，远端 CI、GHCR、GitHub Release 和匿名拉取仍待实际验证。当前从源码运行 Docker 时，先准备本节的配置、外部网络与数据目录，再执行：
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml build
+docker compose -f compose.yaml -f compose.build.yaml run --rm importer migrate
+docker compose -f compose.yaml -f compose.build.yaml run --rm importer doctor
+docker compose -f compose.yaml -f compose.build.yaml up -d --no-build
+```
+
+源码部署的启动、恢复、重建及新建维护容器均继续使用 `docker compose -f compose.yaml -f compose.build.yaml` 前缀，确保选择本地镜像；查询已运行容器可直接 `docker compose exec -T importer ebki ...`。下面不带构建覆盖的 GHCR 拉取、up/run 命令适用于正式发布后。
+
+正式发布后，生产 Compose 默认从 GHCR 拉取 `latest` 预构建镜像，支持 Linux AMD64/ARM64；可在 `.env` 中通过 `EBKI_IMAGE` 指定完整版本或 digest 引用。Dockerfile 使用 Python `3.12.13` 和 uv `0.11.21` 多阶段构建，以锁文件安装生产依赖并校验一致性，运行镜像不携带 uv。首次启动前显式初始化数据库；run 不代替初始化步骤。Compose 自动读取项目 `.env`，并通过 `environment` 注入与本地相同的变量；必需凭据由应用按命令检查，因此可以在尚未填写邮箱和模型凭据时运行迁移。
 
 部署时把服务地址改为已有 Docker 网络内可访问的名称，例如 `http://ezbookkeeping:8080`，不能沿用容器内的 `127.0.0.1`。Compose 使用已有外部网络 `ezbookkeeping`；实际名称不同时直接修改 `compose.yaml` 中的 `networks.ezbookkeeping.name`。
 
@@ -128,7 +139,7 @@ docker compose run --rm importer status
 docker compose run --rm importer issues
 ```
 
-Docker 默认命令为 `run`，直接在PID 1运行单个导入进程，不创建控制台或子worker。维护命令在独立进程执行，关闭输入或命令退出不影响后台：
+Docker 默认命令为 `run`，Compose 继承镜像默认命令，不重复设置 `command`；直接在PID 1运行单个导入进程，不创建控制台或子worker。维护命令在独立进程执行，关闭输入或命令退出不影响后台：
 
 ```sh
 docker compose exec -T importer ebki status
