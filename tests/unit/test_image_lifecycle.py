@@ -16,6 +16,7 @@ spec.loader.exec_module(lifecycle)
 def process(root, pid, *args):
     target = root / str(pid)
     target.mkdir()
+    (target / 'status').write_text('Uid:\t10001\t10001\t10001\t10001\nGid:\t10001\t10001\t10001\t10001\n')
     (target / 'cmdline').write_bytes(b'\0'.join(arg.encode() for arg in args))
 
 
@@ -50,3 +51,10 @@ def test_wrong_default_entrypoint_rejected(entrypoint, command):
     with pytest.raises(AssertionError):
         lifecycle.verify_lifecycle(docker, 'image', [], 'net', [], 'synthetic', 'container')
     assert calls == [('image', 'inspect', 'image')]
+
+
+def test_root_service_rejected(tmp_path):
+    process(tmp_path, 1, '/app/.venv/bin/ebki', 'run')
+    (tmp_path / '1/status').write_text('Uid: 0 0 0 0\nGid: 0 0 0 0\n')
+    with pytest.raises(AssertionError):
+        snapshot(tmp_path)

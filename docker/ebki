@@ -1,0 +1,4 @@
+#!/app/.venv/bin/python
+from ezbookkeeping_importer.entrypoints.container import main
+
+main()

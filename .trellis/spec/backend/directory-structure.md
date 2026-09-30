@@ -7,6 +7,7 @@
 - `application/ports.py` 定义实际需要的外部能力；业务代码不导入具体 HTTP、IMAP 或 PostgreSQL 实现。具体依赖仅在 `bootstrap.py` 组装。
 - `adapters/banks/cmb/parser.py` 处理招行模板；`mail/imap.py` 处理只读 IMAP；`ezbookkeeping/client.py` 与 `llm/openai.py` 处理外部请求；`persistence/` 处理数据库，`adapters/evidence_store.py` 处理原件存储。
 - `config.py` 合并业务 TOML 与运行环境变量，按命令依赖校验；`config_initialization.py` 在所有 CLI 入口初始化缺失的默认配置，包内 `config.toml` 为唯一非凭据默认资源；来源契约见 [配置规范](configuration.md)。根目录`run`只定位项目并委托uv加载.env；`entrypoints/cli.py`分发命令，`entrypoints/run.py`管理同进程Runtime与信号，`entrypoints/worker.py`运行后台周期，不创建控制台或子worker；不得复制分类、写入或恢复状态机。
+- `docker/ebki` 与 `entrypoints/container.py` 仅处理镜像内数据权限准备和 gosu 降权；默认启动及容器 exec ebki 共用该入口，配置内容仍由普通 CLI 初始化。
 - `entrypoints/presentation.py`仅将同一命令结果渲染为中文摘要、Rich表格和提示；问题分组复用application/maintenance.py的纯聚合。单次CLI默认JSON、显式text，不在展示模块查询数据库、改变状态或定义另一份任务资格规则。
 
 `tests/unit/` 只测纯逻辑和可控边界，`tests/integration/` 验证真实 PostgreSQL 与显式启用的隔离账本。个人邮件仅留在已忽略的 `email/`，夹具采用合成内容。

@@ -26,10 +26,10 @@ FROM base AS runtime
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/opt/ebki/bin:/app/.venv/bin:$PATH"
 COPY --from=builder /app/.venv /app/.venv
-RUN mkdir -p /app/data/email /app/data/reports /app/data/logs \
-    && chown -R 10001:10001 /app/data
-USER 10001:10001
+RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
+COPY --chmod=755 docker/ebki /opt/ebki/bin/ebki
 ENTRYPOINT ["ebki"]
 CMD ["run"]

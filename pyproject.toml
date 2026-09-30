@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ezbookkeeping-importer"
-version = "0.2.0"
+version = "0.2.1"
 description = "招商银行邮件导入与核对服务"
 requires-python = ">=3.12"
 dependencies = [
@@ -36,4 +36,4 @@ check_untyped_defs = true
 packages = ["src/ezbookkeeping_importer"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src", "/tests", "/migrations", "/docs", "/scripts", "/README.md", "/pyproject.toml", "/uv.lock", "/Dockerfile", "/compose.yaml", "/compose.build.yaml", "/.env.example", "/.dockerignore", "/run"]
+include = ["/src", "/tests", "/migrations", "/docs", "/scripts", "/docker", "/README.md", "/pyproject.toml", "/uv.lock", "/Dockerfile", "/compose.yaml", "/compose.build.yaml", "/.env.example", "/.dockerignore", "/run"]

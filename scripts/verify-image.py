@@ -90,8 +90,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 import bs4, httpx, psycopg, pydantic, rich
 from ezbookkeeping_importer.adapters.persistence.postgres import SCHEMA
-assert os.getuid() == 10001 and os.getgid() == 10001
+assert os.getuid() == 0  # fixture setup intentionally bypasses the entrypoint
 assert Path.cwd() == Path('/app')
+Path('/app/data').mkdir(exist_ok=True)
 assert not Path('/app/data/config.toml').exists()
 assert 'CREATE TABLE schema_version' in SCHEMA.read_text()
 assert datetime(2026, 1, 1, tzinfo=ZoneInfo('Asia/Shanghai')).utcoffset() == timedelta(hours=8)
@@ -100,53 +101,94 @@ for kind in ('email', 'reports', 'logs'):
     directory.mkdir(exist_ok=True)
     (directory / 'smoke').write_text('persistent')
 '''
-        docker(*base, "--network", "none", *mounts, "--entrypoint", "python", image,
+        docker(*base, "--network", "none", *mounts, "--user", "0:0", "--entrypoint", "python", image,
                "-c", checks)
+        # 原生 Linux volume 验证 POSIX 权限。macOS 共享 bind 可能将 owner 映射为调用 UID，
+        # 因而不能用 bind 对非 root 写入失败作断言；此负例仍强制验证，不跳过。
+        docker(*base, '--network', 'none', *mounts, '--user', '0:0', '--entrypoint', 'python', image,
+               '-c', "import os; os.chown('/app/data',0,0); os.chmod('/app/data',0o755)")
+        expect_configuration_error(*base, '--network', 'none', *mounts, '--user', '12345:12345', image,
+                                   'migrate', message='initialization failed (EACCES)')
         # 同一数据卷由新容器复用；CLI 默认配置路径与真实部署保持一致。
         invocation = [*base, "--network", network, *mounts, "-e",
                       f"EBKI_DATABASE_URL=postgresql://postgres:{password}@{database}/ebki",
                       image]
         for command in ("migrate", "migrate", "status"):
             print(docker(*invocation, command, timeout=60))
-        docker(*base, "--network", "none", *mounts, "--entrypoint", "python", image,
+        docker(*base, "--network", "none", *mounts, "--user", "10001:10001", "--entrypoint", "python", image,
                "-c", DEFAULT_CONFIG_CHECK + "\n"
                "assert all(Path('/app/data', k, 'smoke').read_text() == 'persistent' "
                "for k in ('email', 'reports', 'logs'))")
+        docker(*base, '--network', 'none', *mounts, '--user', '0:0', '--entrypoint', 'python', image,
+               '-c', "import os; from pathlib import Path; "
+               "assert Path('/app/data').stat().st_uid == 10001; "
+               "assert Path('/app/data/config.toml').stat().st_uid == 10001; "
+               "Path('/app/data/config.toml').unlink(); os.chown('/app/data',12345,12345)")
+        docker(*base, '--network', network, *mounts, '--user', '12345:12345', '-e',
+               f'EBKI_DATABASE_URL=postgresql://postgres:{password}@{database}/ebki', image, 'migrate', timeout=60)
+        docker(*base, '--network', 'none', *mounts, '--user', '12345:12345', '--entrypoint', 'python', image,
+               '-c', "import os; from pathlib import Path; "
+               "assert os.getuid() == os.getgid() == 12345; "
+               "assert Path('/app/data/config.toml').stat().st_uid == 12345; "
+               "assert Path('/app/data/config.toml').stat().st_gid == 12345")
+        # 仅恢复本次隔离 fixture，后续生命周期继续验证默认入口。
+        docker(*base, '--network', 'none', *mounts, '--user', '0:0', '--entrypoint', 'python', image,
+               '-c', "import os; os.chown('/app/data',10001,10001); "
+               "os.chown('/app/data/config.toml',10001,10001)")
         # 空宿主目录通过真实入口创建；帮助、显式路径及只读错误不做隐藏回退。
         with tempfile.TemporaryDirectory(prefix=name) as directory:
             data = Path(directory)
-            data.chmod(0o777)
+            data.chmod(0o755)
+            original_owner = (data.stat().st_uid, data.stat().st_gid)
             bind = ['--mount', f'type=bind,src={data},dst=/app/data']
             readonly = ['--mount', f'type=bind,src={data},dst=/app/data,readonly']
-            docker(*base, '--network', 'none', *readonly, image, '--help')
-            assert not (data / 'config.toml').exists()
-            expect_configuration_error(*base, '--network', 'none', *bind, image,
-                                       '--config', 'data/missing.toml', 'migrate',
-                                       message='cannot be read')
-            assert not (data / 'config.toml').exists()
-            expect_configuration_error(*base, '--network', 'none', *readonly, image,
-                                       'migrate', message='initialization failed (EROFS)')
-            database_env = ['-e', f'EBKI_DATABASE_URL=postgresql://postgres:{password}@{database}/ebki']
-            docker(*base, '--network', network, *bind, *database_env, image, 'migrate', timeout=60)
-            docker(*base, '--network', 'none', *bind, '--entrypoint', 'python', image,
-                   '-c', DEFAULT_CONFIG_CHECK)
-            docker(*base, '--network', network, *readonly, *database_env, image, 'status', timeout=60)
-            docker(*base, '--network', 'none', *bind, '--entrypoint', 'python', image,
-                   '-c', "from pathlib import Path; "
-                   "Path('/app/data/config.toml').write_text('invalid = [')")
-            expect_configuration_error(*base, '--network', 'none', *bind, image,
-                                       'migrate', message='invalid TOML syntax')
-            docker(*base, '--network', 'none', *bind, '--entrypoint', 'python', image,
-                   '-c', "from pathlib import Path; "
-                   "assert Path('/app/data/config.toml').read_text() == 'invalid = ['; "
-                   "Path('/app/data/config.toml').unlink()")
+            try:
+                docker(*base, '--network', 'none', *bind, '--user', '0:0', '--entrypoint', 'python', image,
+                       '-c', "import os; os.chown('/app/data', 0, 0); os.chmod('/app/data', 0o755)")
+                docker(*base, '--network', 'none', *readonly, image, '--help')
+                assert not (data / 'config.toml').exists()
+                expect_configuration_error(*base, '--network', 'none', *bind, image,
+                                           '--config', 'data/missing.toml', 'migrate',
+                                           message='cannot be read')
+                assert not (data / 'config.toml').exists()
+                expect_configuration_error(*base, '--network', 'none', *readonly, image,
+                                           'migrate', message='initialization failed (EROFS)')
+                database_env = ['-e', f'EBKI_DATABASE_URL=postgresql://postgres:{password}@{database}/ebki']
+                docker(*base, '--network', network, *bind, *database_env, image, 'migrate', timeout=60)
+                docker(*base, '--network', 'none', *bind, '--user', '10001:10001', '--entrypoint', 'python', image,
+                       '-c', DEFAULT_CONFIG_CHECK)
+                docker(*base, '--network', network, *readonly, *database_env, image, 'status', timeout=60)
+                docker(*base, '--network', 'none', *bind, '--user', '0:0', '--entrypoint', 'python', image,
+                       '-c', "from pathlib import Path; Path('/app/data/email').symlink_to('/tmp')")
+                expect_configuration_error(*base, '--network', 'none', *bind, image,
+                                           'run', message='permission initialization failed (ENOTDIR)')
+                docker(*base, '--network', 'none', *bind, '--user', '0:0', '--entrypoint', 'python', image,
+                       '-c', "from pathlib import Path; Path('/app/data/email').unlink()")
+
+                docker(*base, '--network', 'none', *bind, '--user', '10001:10001', '--entrypoint', 'python', image,
+                       '-c', "from pathlib import Path; "
+                       "Path('/app/data/config.toml').write_text('invalid = [')")
+                expect_configuration_error(*base, '--network', 'none', *bind, image,
+                                           'migrate', message='invalid TOML syntax')
+                docker(*base, '--network', 'none', *bind, '--user', '10001:10001', '--entrypoint', 'python', image,
+                       '-c', "from pathlib import Path; "
+                       "assert Path('/app/data/config.toml').read_text() == 'invalid = ['; "
+                       "Path('/app/data/config.toml').unlink()")
+
+            finally:
+                # Only this freshly generated bind is cleaned, using an explicit fixture identity.
+                docker(*base, '--network', 'none', *bind, '--user', '0:0', '--entrypoint', 'python', image,
+                       '-c', "import os,shutil; from pathlib import Path; "
+                       "[shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink() "
+                       "for p in Path('/app/data').iterdir()]; "
+                       f"os.chown('/app/data', {original_owner[0]}, {original_owner[1]})")
         # 初始默认值已验证，生命周期场景才定制为不依赖真实 AI 的合成规则。
-        docker(*base, "--network", "none", *mounts, "--entrypoint", "python", image,
+        docker(*base, "--network", "none", *mounts, "--user", "10001:10001", "--entrypoint", "python", image,
                "-c", "from pathlib import Path; "
                f"Path('/app/data/config.toml').write_text({SMOKE_CONFIG!r})")
         for command in ("migrate", "status"):
             docker(*invocation, command, timeout=60)
-        docker(*base, "--network", "none", *mounts, "--entrypoint", "python", image,
+        docker(*base, "--network", "none", *mounts, "--user", "10001:10001", "--entrypoint", "python", image,
                "-c", "from pathlib import Path; "
                f"assert Path('/app/data/config.toml').read_text() == {SMOKE_CONFIG!r}")
         verify_lifecycle(

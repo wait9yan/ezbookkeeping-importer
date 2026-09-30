@@ -28,7 +28,7 @@
 
 目前不支持其他银行模板、CSV/PDF 导入或手工 `.eml` 导入。其他 IMAP 主机可以连接采集，但尚未适配的来源认证会形成待处理问题。月账单用于核对，不会仅凭月账单自动补建缺少日报证据的消费。
 
-> **首次运行前请注意：** 当前版本为 `0.2.0`。启动 `./run` 或 Docker 服务后，会自动处理历史邮件和已有待写任务，并实际写入账本，没有 dry-run 模式。请先核对历史交易、信用卡初始负债和其他导入渠道，避免重复记账。
+> **首次运行前请注意：** 当前源码版本为 `0.2.1`（待发布）。启动 `./run` 或 Docker 服务后，会自动处理历史邮件和已有待写任务，并实际写入账本，没有 dry-run 模式。请先核对历史交易、信用卡初始负债和其他导入渠道，避免重复记账。
 
 ## 如何工作
 
@@ -132,6 +132,8 @@ classification_mode = "rules_only"
 
 从 `0.2.0` 起，所有部署方式都会自动生成默认业务配置；`0.1.0` 镜像仍需按该版本文档复制 `config.example.toml` 为 `data/config.toml`。
 
+`0.2.1`（待发布）新增 Docker 数据目录权限自动准备，采用启动时 root 初始化、随后普通用户运行的模式。发布说明见 [v0.2.1](docs/releases/v0.2.1.md)，发布前可使用本节末尾的源码构建流程；已发布的 `0.2.0` 仍需在首次部署时执行 `sudo chown -R 10001:10001 data`。
+
 先阅读 [Releases](https://github.com/wait9yan/ezbookkeeping-importer/releases) 中的版本说明，再从对应版本标签的仓库复制 `compose.yaml` 和 `.env.example` 到独立部署目录，并参考该版本的 `docs/operations.md`。首次准备服务连接：
 
 ```sh
@@ -143,11 +145,12 @@ mkdir -p data
 
 Compose **只启动 importer**，连接现有外部网络 `ezbookkeeping`。请准备该网络，并确保 PostgreSQL 和 ezBookkeeping 可从容器访问；实际网络名不同时，修改 `networks.ezbookkeeping.name`。服务地址应填写容器能访问的主机名或 IP，容器内的 `127.0.0.1` 指向 importer 自己。
 
-容器使用 `10001:10001` 身份，统一将 `./data` 挂载到 `/app/data`，按需创建 `email`、`reports`、`logs` 子目录。宿主机需赋予 `data` 根目录及子目录写权限。配置位于 `data/config.toml`，容器内为 `/app/data/config.toml`，在首次 `migrate`、`doctor` 或 `run` 时自动创建并持久保存。目录无写权限或已有配置非法时明确失败，不覆盖文件。部署前准备写权限：
+Compose 统一将 `./data` 挂载到 `/app/data`。新启动入口会先以 root 准备应用所需的目录和文件权限，再通过 `gosu` 切换为 `10001:10001` 执行命令；常见的 `root:root、755` 空目录无需手动改权限。权限修复限于 importer 的配置和 `email`、`reports`、`logs`，会按需修改宿主机文件的所有权和权限，不改文件内容。配置仍由普通 CLI 自动生成，已有配置始终保留。
+
+需要自行管理权限时，可在 Compose 显式设置非 root `user: "UID:GID"`，镜像会保留该身份并跳过 root 权限准备。只读挂载或存储权限禁止修复时明确失败，不自动切换为 root 运行服务。首次初始化和检查：
 
 ```sh
 mkdir -p data
-sudo chown -R 10001:10001 data
 
 docker compose pull importer
 docker compose run --rm importer migrate
@@ -162,7 +165,7 @@ docker compose run --rm importer status
 docker compose logs --tail 100 importer
 ```
 
-容器默认运行单进程 `ebki run`，不依赖终端和标准输入；Compose 继承镜像默认命令，不重复设置 `command`。维护使用独立命令，执行完退出，不影响后台导入：
+容器默认运行单进程 `ebki run`，不依赖终端和标准输入；Compose 继承镜像默认命令，不重复设置 `command`。初始化后应用保持 PID 1，日常 `exec … ebki` 同样经过降权入口。维护使用独立命令，执行完退出，不影响后台导入：
 
 ```sh
 docker compose exec -T importer ebki status

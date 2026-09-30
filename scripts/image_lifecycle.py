@@ -30,6 +30,9 @@ for process in Path('/proc').glob('[0-9]*'):
     if any(arg.startswith(b'from multiprocessing.') for arg in args):
         children.append(int(process.name))
 assert owners == [1], owners
+status = (Path('/proc') / '1/status').read_text().splitlines()
+assert next(line for line in status if line.startswith('Uid:')).split()[1:] == ['10001'] * 4
+assert next(line for line in status if line.startswith('Gid:')).split()[1:] == ['10001'] * 4
 assert children == [], children
 print(json.dumps(owners))
 '''
@@ -79,7 +82,7 @@ def verify_lifecycle(docker, image, platform_args, network, mounts, database_url
         return json.loads(docker('inspect', name))[0]
 
     def once_python(code):
-        return docker('run', '--rm', *shared, '--entrypoint', 'python', image, '-c', code)
+        return docker('run', '--rm', *shared, '--user', '10001:10001', '--entrypoint', 'python', image, '-c', code)
 
     def statuses():
         return {r['id']: r['import_status'] for r in json.loads(once_python(STATUS_CHECK))}
@@ -122,8 +125,15 @@ def verify_lifecycle(docker, image, platform_args, network, mounts, database_url
 
     try:
         docker('run', '-d', '--name', ledger, *platform_args, '--network', network,
-               *fixture, '--entrypoint', 'python', image, '/smoke-fixture/ledger_server.py')
+               *fixture, '--user', '10001:10001', '--entrypoint', 'python', image, '/smoke-fixture/ledger_server.py')
         created.append(ledger)
+        docker('run', '--rm', *shared, '--user', '0:0', '--entrypoint', 'python', image,
+               '-c', "import os; from pathlib import Path; "
+               "paths=[Path('/app/data/email/old.eml'), Path('/app/data/reports/old.tmp'), "
+               "Path('/app/data/logs/old.jsonl')]; "
+               "[(p.write_text('persistent'), os.chown(p,0,0), p.chmod(0o600)) for p in paths]; "
+               "p=Path('/app/data/logs/worker.jsonl'); "
+               "p.write_text('{\"event\":\"permission_fixture\"}\\n'); os.chown(p,0,0); p.chmod(0o600)")
         # 不加-i/-t/--init/停止期限，不覆盖CMD；运行真实发行包。
         docker('run', '-d', '--restart', 'unless-stopped', '--name', name, *shared, image)
         created.append(name)
@@ -133,6 +143,17 @@ def verify_lifecycle(docker, image, platform_args, network, mounts, database_url
         assert not config['HostConfig'].get('Init')
         until(lambda: any(e.get('event') == 'sync_completed' for e in logs()), '空邮箱同步完成')
         assert_single()
+        once_python("from pathlib import Path; "
+                    "paths=[Path('/app/data/email/old.eml'), Path('/app/data/reports/old.tmp'), "
+                    "Path('/app/data/logs/old.jsonl')]; "
+                    "assert all(p.read_text() == 'persistent' for p in paths); "
+                    "paths[1].open('a').close()")
+        once_python("import json; from pathlib import Path; "
+                    "lines=Path('/app/data/logs/worker.jsonl').read_text().splitlines(); "
+                    "assert json.loads(lines[0]) == {'event': 'permission_fixture'}; "
+                    "assert any(json.loads(line).get('event') == 'worker_started' for line in lines[1:])")
+        docker('exec', name, 'ebki', 'issues', '--snapshot-out', '/app/data/maintenance-smoke.json')
+        once_python("from pathlib import Path; assert Path('/app/data/maintenance-smoke.json').stat().st_uid == 10001")
         pid, run_id = config['State']['Pid'], current_run()
         for command in ('status', 'issues'):
             json.loads(docker('exec', name, 'ebki', command))
@@ -142,7 +163,7 @@ def verify_lifecycle(docker, image, platform_args, network, mounts, database_url
 
         # 真实写前登记已提交，但HTTP尚未发送；默认stop在十秒后强杀。
         once_python("from pathlib import Path; Path('/app/data/pause-before-send').touch()")
-        docker('run', '--rm', *shared, '--entrypoint', 'python', image,
+        docker('run', '--rm', *shared, '--user', '10001:10001', '--entrypoint', 'python', image,
                '/smoke-fixture/seed.py', 'before')
         previous = current_run()
         docker('start', name)
@@ -161,7 +182,7 @@ def verify_lifecycle(docker, image, platform_args, network, mounts, database_url
 
         # HTTP服务先持久接受请求，挂起回复；本地被杀后核实而不再次POST。
         control({'hold_reply': True})
-        docker('run', '--rm', *shared, '--entrypoint', 'python', image,
+        docker('run', '--rm', *shared, '--user', '10001:10001', '--entrypoint', 'python', image,
                '/smoke-fixture/seed.py', 'after')
         previous = current_run()
         docker('start', name)
