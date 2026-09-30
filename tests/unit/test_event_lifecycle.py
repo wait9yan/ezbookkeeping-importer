@@ -1,3 +1,4 @@
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -12,10 +13,11 @@ from ezbookkeeping_importer.domain.errors import Conflict, LogPersistenceError
 def runtime(monkeypatch):
     store = Mock()
     store.lock_worker.return_value = True
-    state = SimpleNamespace(store=store, settings=SimpleNamespace(timezone="Asia/Shanghai"))
+    state = SimpleNamespace(store=store, ledger=Mock(), settings=SimpleNamespace(timezone="Asia/Shanghai"))
     monkeypatch.setattr(worker, "configure_logging", Mock())
     monkeypatch.setattr(worker, "recover_dispatching", Mock(return_value=0))
     monkeypatch.setattr(worker, "request_sync", Mock())
+    monkeypatch.setattr(worker, "verify_unknown", Mock())
     monkeypatch.setattr(worker.signal, "signal", Mock())
     monkeypatch.setattr(
         worker.time, "sleep", lambda _: pytest.fail("must not poll in this scenario")
@@ -29,12 +31,15 @@ def capture(monkeypatch):
     return records
 
 
-def test_once_finishes_with_stopped_event(runtime, monkeypatch):
+def test_requested_stop_finishes_with_stopped_event(runtime, monkeypatch):
     records = capture(monkeypatch)
-    monkeypatch.setattr(worker, "cycle", Mock(return_value=True))
-    worker.run(runtime, once=True)
-    assert [name for name, _ in records] == ["worker_starting", "worker_started", "worker_stopped"]
-    assert records[-1][1]["reason"] == "once"
+    stopped = Event()
+    monkeypatch.setattr(worker, "cycle", Mock(side_effect=lambda *a, **k: stopped.set()))
+    worker.run(runtime, stop_event=stopped)
+    assert [name for name, _ in records] == [
+        "worker_starting", "worker_started", "worker_stop_requested", "worker_stopped"
+    ]
+    assert records[-1][1]["reason"] == "requested"
 
 
 def test_lock_failure_never_opens_log_file(runtime):
@@ -48,7 +53,7 @@ def test_recovery_failure_has_no_normal_stopped_event(runtime, monkeypatch):
     records = capture(monkeypatch)
     worker.recover_dispatching.side_effect = RuntimeError("private detail")
     with pytest.raises(RuntimeError):
-        worker.run(runtime, once=True)
+        worker.run(runtime)
     assert [name for name, _ in records] == ["worker_starting", "worker_failed"]
     assert "private detail" not in str(records)
 
@@ -57,7 +62,7 @@ def test_logging_failure_bypasses_cycle_recovery(runtime, monkeypatch):
     records = capture(monkeypatch)
     monkeypatch.setattr(worker, "cycle", Mock(side_effect=LogPersistenceError("safe log failure")))
     with pytest.raises(LogPersistenceError):
-        worker.run(runtime, once=True)
+        worker.run(runtime)
     assert [name for name, _ in records] == ["worker_starting", "worker_started"]
     runtime.store.is_connection_usable.assert_not_called()
 
@@ -94,3 +99,40 @@ def test_empty_cycle_does_not_emit_info_events(monkeypatch):
     monkeypatch.setattr(service, "emit", output)
     assert service.cycle(runtime, Mock())
     output.assert_not_called()
+
+
+def test_failed_cycle_recovers_on_later_success(runtime, monkeypatch):
+    records = capture(monkeypatch)
+    stopped = Event()
+    results = iter([RuntimeError("private detail"), False, True])
+
+    def process_cycle(*args, **kwargs):
+        result = next(results)
+        if isinstance(result, Exception):
+            raise result
+        if result is True:
+            stopped.set()
+        return result
+
+    monkeypatch.setattr(worker, "cycle", process_cycle)
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    worker.run(runtime, stop_event=stopped)
+    assert [name for name, _ in records] == [
+        "worker_starting", "worker_started", "cycle_failed", "cycle_recovered",
+        "worker_stop_requested", "worker_stopped",
+    ]
+    assert "private detail" not in str(records)
+
+
+def test_database_disconnect_exits_instead_of_retrying(runtime, monkeypatch):
+    from ezbookkeeping_importer.domain.errors import ImporterError
+
+    records = capture(monkeypatch)
+    runtime.store.is_connection_usable.return_value = False
+    monkeypatch.setattr(worker, "cycle", Mock(side_effect=RuntimeError("private detail")))
+    with pytest.raises(ImporterError, match="database connection lost"):
+        worker.run(runtime)
+    assert [name for name, _ in records] == [
+        "worker_starting", "worker_started", "worker_database_disconnected", "worker_failed",
+    ]
+    assert "private detail" not in str(records)

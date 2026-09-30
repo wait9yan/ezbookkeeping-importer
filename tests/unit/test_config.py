@@ -6,7 +6,15 @@ from types import SimpleNamespace
 import pytest
 
 from ezbookkeeping_importer import bootstrap
-from ezbookkeeping_importer.config import ConfigurationError, ENV_FIELDS, load_settings
+from ezbookkeeping_importer.config import (
+    BusinessMailSettings,
+    BusinessSettings,
+    ConfigurationError,
+    ENV_FIELDS,
+    MailSettings,
+    Settings,
+    load_settings,
+)
 from ezbookkeeping_importer.entrypoints import cli
 
 BUSINESS = 'timezone = "Asia/Shanghai"\nclassification_mode = "rules_only"\n[mail]\nsource_id = "synthetic"\n'
@@ -50,11 +58,9 @@ def cli_configuration(config, monkeypatch):
     return loaded
 
 
-@pytest.mark.parametrize("root_content", [BUSINESS.replace("synthetic", "old-root"), "invalid = ["])
-def test_cli_reads_default_data_configuration_only(cli_configuration, monkeypatch, root_content):
+def test_cli_reads_default_data_configuration(cli_configuration, monkeypatch):
     Path("data").mkdir()
     Path("data/config.toml").write_text(BUSINESS.replace("synthetic", "data-source"))
-    Path("config.toml").write_text(root_content)
     monkeypatch.setattr("sys.argv", ["ebki", "migrate"])
 
     assert cli.main() == 0
@@ -77,12 +83,11 @@ def test_cli_explicit_configuration_overrides_default(
     assert cli_configuration[0].mail.source_id == "explicit-source"
 
 
-def test_cli_missing_data_configuration_does_not_fall_back_to_root(
+def test_cli_missing_default_configuration_reports_error(
     cli_configuration, monkeypatch, capsys
 ):
     import json
 
-    Path("config.toml").write_text(BUSINESS)
     monkeypatch.setattr("sys.argv", ["ebki", "migrate"])
 
     assert cli.main() == 1
@@ -94,22 +99,24 @@ def test_cli_missing_data_configuration_does_not_fall_back_to_root(
     assert not Path("data/config.toml").exists()
 
 
+def test_cli_missing_explicit_configuration_reports_error(
+    cli_configuration, monkeypatch, capsys
+):
+    import json
+
+    Path("data").mkdir()
+    Path("data/config.toml").write_text(BUSINESS)
+    monkeypatch.setattr("sys.argv", ["ebki", "--config", "missing.toml", "migrate"])
+    assert cli.main() == 1
+    assert cli_configuration == []
+    assert json.loads(capsys.readouterr().err)["error_type"] == "ConfigurationError"
+
+
 @pytest.mark.parametrize("log_level", [None, "WARNING"])
-def test_removed_environment_options_do_not_override_runtime_defaults(
+def test_runtime_paths_rotation_and_business_log_level(
     config, monkeypatch, log_level
 ):
     environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
-    environment(
-        monkeypatch,
-        {
-            "EBKI_EVIDENCE_DIR": "/custom/email",
-            "EBKI_REPORT_DIR": "/custom/reports",
-            "EBKI_LOG_DIR": "/custom/logs",
-            "EBKI_LOG_LEVEL": "DEBUG",
-            "EBKI_LOG_MAX_BYTES": "2048",
-            "EBKI_LOG_BACKUPS": "3",
-        },
-    )
     if log_level is not None:
         config.write_text(f'log_level = "{log_level}"\n' + BUSINESS)
     settings = load_settings(str(config), command="status")
@@ -124,22 +131,65 @@ def test_removed_environment_options_do_not_override_runtime_defaults(
 
 
 @pytest.mark.parametrize(
-    "field,value",
-    [
-        ("evidence_dir", '"SECRET_PATH"'),
-        ("report_dir", '"SECRET_PATH"'),
-        ("log_dir", '"SECRET_PATH"'),
-        ("log_max_bytes", "2048"),
-        ("log_backups", "3"),
-    ],
+    "field",
+    sorted(Settings.model_fields.keys() - BusinessSettings.model_fields.keys()),
 )
-def test_fixed_runtime_settings_cannot_be_overridden_in_toml(config, monkeypatch, field, value):
+def test_runtime_only_fields_are_not_business_toml(config, monkeypatch, field):
     environment(monkeypatch)
-    config.write_text(f"{field} = {value}\n" + BUSINESS)
+    config.write_text(f'{field} = "SECRET_VALUE"\n' + BUSINESS)
     with pytest.raises(ConfigurationError) as error:
         load_settings(str(config))
-    assert f"{field} -> remove" in str(error.value)
-    assert "SECRET_PATH" not in str(error.value)
+    assert f"{field}: unknown TOML field" in str(error.value)
+    assert "SECRET_VALUE" not in str(error.value)
+    assert all(value not in str(error.value) for value in ENV.values())
+
+
+@pytest.mark.parametrize(
+    "field",
+    sorted(MailSettings.model_fields.keys() - BusinessMailSettings.model_fields.keys()),
+)
+def test_mail_connection_fields_are_not_business_toml(config, monkeypatch, field):
+    environment(monkeypatch)
+    config.write_text(BUSINESS + f'{field} = "SECRET_VALUE"\n')
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(str(config))
+    assert f"mail.{field}: unknown TOML field" in str(error.value)
+    assert "SECRET_VALUE" not in str(error.value)
+
+
+def test_current_business_fields_survive_environment_assembly(config, monkeypatch):
+    from datetime import date, time
+
+    environment(monkeypatch)
+    config.write_text(
+        'date_only_time = 12:34:56\nrepayment_ownership_confirmed = true\n'
+        'log_level = "debug"\n' + BUSINESS + 'rescan_days = 14\n'
+        '[[repayments]]\nsource_account_id = "source"\ndestination_account_id = "destination"\n'
+        'category_id = "repayment"\ncurrency = "CNY"\nvalid_from = 2026-01-01\n'
+        'valid_until = 2026-12-31\n[[rules]]\nmerchant_pattern = "synthetic"\n'
+        'category_id = "expense"\n'
+    )
+    settings = load_settings(str(config))
+    assert settings.date_only_time == time(12, 34, 56)
+    assert settings.repayment_ownership_confirmed is True
+    assert settings.log_level == "DEBUG"
+    assert settings.mail.source_id == "synthetic" and settings.mail.rescan_days == 14
+    assert settings.repayments[0].valid_from == date(2026, 1, 1)
+    assert settings.repayments[0].valid_until == date(2026, 12, 31)
+    assert settings.repayments[0].destination_account_id == "destination"
+    assert settings.rules[0].category_id == "expense"
+
+
+def test_internal_settings_allow_dependency_injection():
+    settings = Settings(
+        timezone="Asia/Shanghai", mail=MailSettings(source_id="synthetic"),
+        evidence_dir=Path("test/email"), report_dir=Path("test/reports"),
+        log_dir=Path("test/logs"), log_max_bytes=512, log_backups=2,
+    )
+    assert settings.evidence_dir == Path("test/email")
+    assert settings.report_dir == Path("test/reports")
+    assert settings.log_dir == Path("test/logs")
+    assert settings.log_max_bytes == 512 and settings.log_backups == 2
 
 
 @pytest.mark.parametrize("command", ["migrate", "status", "issues", "sync", "recheck"])
@@ -172,14 +222,14 @@ def test_ledger_commands_report_all_missing_ledger_variables(
 
 def test_rules_only_needs_no_ai_but_worker_requires_mail_and_ledger(config, monkeypatch):
     environment(monkeypatch, {k: v for k, v in ENV.items() if not k.startswith("EBKI_AI_")})
-    settings = load_settings(str(config), command="worker")
+    settings = load_settings(str(config), command="run")
     assert settings.ai_url is None
     monkeypatch.delenv("EBKI_IMAP_PASSWORD")
     with pytest.raises(ConfigurationError, match="EBKI_IMAP_PASSWORD"):
-        load_settings(str(config), command="worker")
+        load_settings(str(config), command="run")
 
 
-@pytest.mark.parametrize("command", ["worker", "doctor"])
+@pytest.mark.parametrize("command", ["run", "doctor"])
 def test_ai_mode_requires_url_model_and_key(config, monkeypatch, command):
     config.write_text(BUSINESS.replace('"rules_only"', '"ai"'))
     environment(monkeypatch, {k: v for k, v in ENV.items() if not k.startswith("EBKI_AI_")})
@@ -219,27 +269,6 @@ def test_no_implicit_dotenv_loader(config, monkeypatch):
         load_settings(str(config), command="status")
 
 
-def test_all_legacy_runtime_toml_keys_are_reported_without_values(config, monkeypatch):
-    environment(monkeypatch)
-    config.write_text(
-        'ledger_url="legacy-url-secret"\nai_token="legacy-token-secret"\n'
-        'timezone="Asia/Shanghai"\n[mail]\n'
-        'source_id="synthetic"\nusername="legacy-username-secret"\npassword="legacy-password-secret"\n'
-    )
-    with pytest.raises(ConfigurationError) as error:
-        load_settings(str(config), command="status")
-    message = str(error.value)
-    for source, destination in [
-        ("ledger_url", "EBKI_LEDGER_URL"),
-        ("ai_token", "EBKI_AI_TOKEN"),
-        ("mail.username", "EBKI_IMAP_USERNAME"),
-        ("mail.password", "EBKI_IMAP_PASSWORD"),
-    ]:
-        assert f"{source} -> {destination}" in message
-    assert "secret" not in message
-    assert all(secret not in message for secret in ENV.values())
-
-
 @pytest.mark.parametrize(
     "variable,value",
     [
@@ -270,10 +299,46 @@ def test_unknown_toml_key_is_an_error_and_never_displays_value(config, monkeypat
     assert "secret-typo-value" not in str(error.value)
 
 
-def test_cli_validation_precedes_runtime_and_does_not_leak(config, monkeypatch, capsys):
+@pytest.mark.parametrize(
+    "suffix,field",
+    [
+        ('misspelled = "SECRET_VALUE"\n', "mail.misspelled"),
+        ('[[rules]]\nmerchant_pattern="test"\ncategory_id="category"\n'
+         'misspelled="SECRET_VALUE"\n', "rules.0.misspelled"),
+        ('[[repayments]]\nsource_account_id="source"\ndestination_account_id="destination"\n'
+         'category_id="category"\ncurrency="CNY"\nvalid_from=2026-01-01\n'
+         'misspelled="SECRET_VALUE"\n', "repayments.0.misspelled"),
+    ],
+)
+def test_nested_business_tables_reject_unknown_fields(config, monkeypatch, suffix, field):
+    environment(monkeypatch)
+    config.write_text(BUSINESS + suffix)
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(str(config))
+    assert f"{field}: unknown TOML field" in str(error.value)
+    assert "SECRET_VALUE" not in str(error.value)
+
+
+@pytest.mark.parametrize("value", ['"SECRET_VALUE"', "123", "[]"])
+def test_mail_business_input_must_be_a_table(config, monkeypatch, value):
+    environment(monkeypatch)
+    config.write_text(f'timezone="Asia/Shanghai"\nmail={value}\n')
+    with pytest.raises(ConfigurationError) as error:
+        load_settings(str(config))
+    assert "mail: must be a TOML table" in str(error.value)
+    assert "SECRET_VALUE" not in str(error.value)
+
+
+@pytest.mark.parametrize("command", ["run", "doctor"])
+def test_cli_validation_precedes_runtime_and_does_not_leak(config, monkeypatch, capsys, command):
+    from ezbookkeeping_importer.entrypoints import run as startup
+
+    monkeypatch.setattr(
+        startup, "Runtime", lambda *a, **k: pytest.fail("resource opened before validation")
+    )
     environment(monkeypatch)
     monkeypatch.setenv("EBKI_LEDGER_URL", "https://username:CLI-SECRET@example.test")
-    monkeypatch.setattr("sys.argv", ["ebki", "--config", str(config), "worker"])
+    monkeypatch.setattr("sys.argv", ["ebki", "--config", str(config), command])
     monkeypatch.setattr(
         cli, "Runtime", lambda *a, **k: pytest.fail("resource opened before validation")
     )
@@ -344,28 +409,17 @@ def test_runtime_constructs_only_command_dependencies(
         assert constructors.created["EzBookkeepingClient"].closed
 
 
-@pytest.mark.parametrize("legacy_timeout", ["1.5", "nan", "secret-not-timeout"])
-def test_fixed_timeouts_ignore_removed_environment_and_rules_only_does_not_construct_ai(
-    config, monkeypatch, constructors, legacy_timeout
+def test_service_timeouts_are_fixed_and_rules_only_does_not_construct_ai(
+    config, monkeypatch, constructors
 ):
     environment(monkeypatch)
-    environment(
-        monkeypatch,
-        {
-            "EBKI_LEDGER_TIMEOUT_SECONDS": legacy_timeout,
-            "EBKI_AI_TIMEOUT_SECONDS": legacy_timeout,
-            "EBKI_IMAP_TIMEOUT_SECONDS": legacy_timeout,
-        },
-    )
     config.write_text(BUSINESS.replace('"rules_only"', '"ai"'))
     settings = load_settings(str(config))
     runtime = bootstrap.Runtime(settings)
     assert constructors.arguments["EzBookkeepingClient"][1]["timeout"] == 30
     assert constructors.arguments["AIClient"][1]["timeout"] == 30
     runtime.mail()
-    assert not hasattr(constructors.arguments["MailClient"][0][0], "timeout_seconds")
-    assert not hasattr(settings, "ledger_timeout_seconds")
-    assert not hasattr(settings, "ai_timeout_seconds")
+    assert constructors.arguments["MailClient"][0][0] == settings.mail
     runtime.close()
     assert all(
         constructors.created[name].closed
@@ -419,16 +473,6 @@ def test_toml_syntax_error_does_not_echo_secret(config, monkeypatch):
         load_settings(str(config), command="status")
     assert "invalid TOML syntax" in str(error.value)
     assert "SECRET" not in str(error.value)
-
-
-def test_empty_env_secret_cannot_fall_back_to_toml(config, monkeypatch):
-    environment(monkeypatch)
-    monkeypatch.setenv("EBKI_LEDGER_TOKEN", "")
-    config.write_text('ledger_token="SECRET_OLD_TOKEN"\n' + BUSINESS)
-    with pytest.raises(ConfigurationError) as error:
-        load_settings(str(config))
-    assert "ledger_token -> EBKI_LEDGER_TOKEN" in str(error.value)
-    assert "SECRET_OLD_TOKEN" not in str(error.value)
 
 
 def test_ai_optional_partial_config_does_not_block_database_command(config, monkeypatch):
@@ -498,7 +542,7 @@ def test_invalid_url_and_port_have_safe_actionable_reasons(config, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "command", ["migrate", "status", "issues", "sync", "recheck", "worker", "doctor"]
+    "command", ["migrate", "status", "issues", "sync", "recheck", "run", "doctor"]
 )
 def test_runtime_database_creation_is_capability_controlled(
     config, monkeypatch, constructors, command
@@ -508,17 +552,6 @@ def test_runtime_database_creation_is_capability_controlled(
     kwargs = constructors.arguments["PostgresStore"][1]
     assert kwargs == ({"create_database": True} if command == "migrate" else {})
     runtime.close()
-
-
-@pytest.mark.parametrize(
-    "field", ["writes_enabled", "refund_ownership_confirmed", "historical_boundary_reviewed"]
-)
-@pytest.mark.parametrize("value", ["true", "false"])
-def test_removed_write_gates_require_explicit_config_migration(config, monkeypatch, field, value):
-    environment(monkeypatch)
-    config.write_text(f"{field} = {value}\n" + BUSINESS)
-    with pytest.raises(ConfigurationError, match=field + " -> remove"):
-        load_settings(str(config))
 
 
 @pytest.mark.parametrize("value", ["-1", "true", "1.5", '"7"'])
@@ -534,21 +567,6 @@ def test_rescan_days_business_configuration(config, monkeypatch, value):
     environment(monkeypatch)
     config.write_text(BUSINESS + f"rescan_days = {value}\n")
     assert load_settings(str(config)).mail.rescan_days == value
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("source_policy", "manual_acceptance"),
-        ("source_policy", "qq_authentication_results"),
-        ("trusted_authserv_id", "mx.qq.com"),
-    ],
-)
-def test_removed_source_policy_requires_migration(config, monkeypatch, field, value):
-    environment(monkeypatch)
-    config.write_text(f'{field} = "{value}"\n' + BUSINESS)
-    with pytest.raises(ConfigurationError, match=field + " -> remove"):
-        load_settings(str(config))
 
 
 def test_console_dependency_profile_is_removed(config):
@@ -571,17 +589,20 @@ def test_invalid_log_level_toml_reports_safe_field_name(config, monkeypatch, val
         load_settings(str(config), command="status")
     assert "log_level" in str(error.value)
     assert "SECRET_LEVEL" not in str(error.value)
-    assert "EBKI_LOG_LEVEL" not in str(error.value)
 
 
-def test_run_and_worker_share_capabilities_and_required_configuration(config, monkeypatch):
+def test_run_has_full_capabilities_and_required_configuration(config, monkeypatch):
     from ezbookkeeping_importer.config import command_capabilities
 
-    assert command_capabilities("run", "ai") == command_capabilities("worker", "ai")
+    assert command_capabilities("run", "ai") == {
+        "database", "ledger", "mail", "ai", "evidence", "pipeline"
+    }
     with pytest.raises(ConfigurationError, match="EBKI_DATABASE_URL"):
         load_settings(str(config), command="run")
     environment(monkeypatch)
-    assert load_settings(str(config), command="run") == load_settings(str(config), command="worker")
+    assert load_settings(str(config)) == load_settings(str(config), command="run")
+    with pytest.raises(ConfigurationError, match="unknown command"):
+        load_settings(str(config), command="worker")
 
 
 def test_recheck_cli_uses_local_dispatch_and_preserves_json(config, monkeypatch, capsys):
@@ -607,26 +628,8 @@ def test_recheck_cli_uses_local_dispatch_and_preserves_json(config, monkeypatch,
 
 
 def test_recheck_accepts_no_batch_bypass_options():
-    for interactive in (False, True):
-        parser = cli.build_parser(interactive=interactive)
-        assert cli.parse_command(parser, ["recheck"]).command == "recheck"
-        with pytest.raises(SystemExit) as error:
-            cli.parse_command(parser, ["recheck", "--action", "confirm-new"])
-        assert error.value.code == 2
-
-
-@pytest.mark.parametrize(
-    "field", ["ledger_timeout_seconds", "ai_timeout_seconds", "mail.timeout_seconds"]
-)
-def test_retired_timeouts_require_removal_not_environment_migration(config, monkeypatch, field):
-    environment(monkeypatch)
-    if field.startswith("mail."):
-        config.write_text(BUSINESS + 'timeout_seconds = "secret-timeout"\n')
-    else:
-        config.write_text(f'{field} = "secret-timeout"\n' + BUSINESS)
-    with pytest.raises(ConfigurationError) as error:
-        load_settings(str(config))
-    message = str(error.value)
-    assert f"{field} -> remove" in message
-    assert "EBKI_" not in message
-    assert "secret-timeout" not in message
+    parser = cli.build_parser()
+    assert cli.parse_command(parser, ["recheck"]).command == "recheck"
+    with pytest.raises(SystemExit) as error:
+        cli.parse_command(parser, ["recheck", "--action", "confirm-new"])
+    assert error.value.code == 2

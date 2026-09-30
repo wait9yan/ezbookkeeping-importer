@@ -2,7 +2,7 @@
 
 [返回 README](../README.md)
 
-本文保留完整的账务行为、配置迁移、维护和恢复说明。首次使用请先阅读 README 的快速开始。本地开发命令在项目根目录执行；Docker 运维命令在包含 compose.yaml、.env 和 data/config.toml 的部署目录执行。
+本文保留完整的账务行为、配置、维护和恢复说明。首次使用请先阅读 README 的快速开始。本地开发命令在项目根目录执行；Docker 运维命令在包含 compose.yaml、.env 和 data/config.toml 的部署目录执行。
 
 ## 账务行为
 
@@ -28,7 +28,9 @@
 配置分为两个明确来源：
 
 - `.env` 保存服务连接和运行环境参数，由启动工具注入进程环境。
-- `data/config.toml` 保存业务规则：还款映射、商户规则、分类模式和稳定邮件来源身份。`mail.source_id` 是稳定业务身份，仍保留在 TOML。
+- `data/config.toml` 保存业务规则：还款映射、商户规则、分类模式、时区、日志级别和稳定邮件来源身份。`mail.source_id` 是稳定业务身份。
+
+TOML 只接受 [配置示例](../config.example.toml) 中的业务字段。服务连接信息仅从环境变量读取；未知字段统一报 `unknown TOML field`，不会被忽略或改写。
 
 ```sh
 cp .env.example .env
@@ -42,12 +44,21 @@ uv sync --frozen
 ```sh
 ./run migrate   # 首次初始化
 ./run doctor    # 检查配置与只读连通性
-./run           # 同时启动 worker 和交互控制台
+./run           # 在单进程中持续导入，不读取终端输入
 ```
 
 `./run` 通过 uv 加载项目 `.env`，有参数时透传给 `ebki`；例如 `./run status`、`./run issues`。默认配置路径无需重复指定；需要其他配置时使用 `./run --config /path/to/config.toml run`。启动不会自动初始化数据库。
 
 **普通 `uv run` 不会替本项目自动加载 `.env`。** 原始命令仍可使用 `uv run --env-file .env ebki run`；应用只读取 TOML 和进程环境，不另设 dotenv 加载器，已有 shell 环境变量优先。直接执行已安装的 `ebki` 时，调用方负责注入环境。`.env` 已被忽略，不会进入源码发行包或 Docker 镜像；`.env.example` 是可分享的空值模板。
+
+本机 `ebki` 安装在项目虚拟环境的 `.venv/bin/ebki`，不会自动成为全局命令。若 shell 提示找不到 `ebki`，日常优先使用 `./run`，或显式通过 uv 调用：
+
+```sh
+./run status --format text
+uv run --env-file .env ebki status --format text
+```
+
+也可执行 `source .venv/bin/activate` 后直接输入 `ebki --help`；激活只将虚拟环境加入当前 shell 的 `PATH`，不会加载 `.env`。需要服务连接配置时，继续使用上述启动器或显式加载环境。
 
 ### 服务连接环境变量
 
@@ -67,9 +78,9 @@ uv sync --frozen
 | 命令 | 必需服务配置 |
 | --- | --- |
 | `migrate/status/issues/sync/recheck` | 数据库；不需要配置外部服务，recheck只安排复查 |
-| `issues` 交互中的接纳、忽略、普通重试、确认新建 | 数据库；决定实际执行仍交后台 |
-| `issues` 交互中的候选对比、关联、账户修正，以及 `restore-audit` | 数据库与账本 |
-| `run`、`worker`、`doctor` | 数据库、账本、邮箱；`classification_mode="ai"` 时额外要求模型地址、名称及 Key |
+| `issues resolve` 的接纳、忽略、普通重试、确认新建 | 数据库；决定实际执行仍交后台 |
+| `issues candidates`、`issues resolve` 的关联、账户修正，以及 `restore-audit` | 数据库与账本 |
+| `run`、`doctor` | 数据库、账本、邮箱；`classification_mode="ai"` 时额外要求模型地址、名称及 Key |
 
 `EBKI_AI_URL` 应填写模型服务的 API 基址，应用追加 `/chat/completions`。如果站点根地址返回 HTML 首页，即使 HTTP 200 也不能通过分类校验；应核对服务实际 API 路径（常见为 `/v1`），不要把网页地址当作 API。
 
@@ -79,10 +90,10 @@ uv sync --frozen
 
 核对 ezBookkeeping 账户描述及 `data/config.toml` 中的业务设置：
 
-1. 在 ezBookkeeping 可记账子账户的描述中填写银行卡号（12–19 位，可含空格或连字符分组），并设置正确币种。按卡号和币种唯一匹配，不再填写 `[[accounts]]`。同尾号同币种多个候选、或缺少同币账户会明确报错；历史换卡记录仍需核实，不按今天的账户名称猜归属。
+1. 在 ezBookkeeping 可记账子账户的描述中填写银行卡号（12–19 位，可含空格或连字符分组），并设置正确币种。按卡号和币种唯一匹配。同尾号同币种多个候选、或缺少同币账户会明确报错；历史换卡记录仍需核实，不按今天的账户名称猜归属。
 2. 核对历史消费与初始负债、既有交易和其他导入渠道的重复边界。退款自动按负支出处理，仍执行查重；还款需要配置账户映射和渠道归属。
 3. 还款两端人民币账户、二级转账分类，以及仅日期通知的 `date_only_time` 记账约定。
-4. 当前支持 CNY 与 USD，美元需要对应 USD 子账户；同一张卡只有 USD 子账户时，其 CNY 消费不能自动写入 USD 账户。新入账不再需要报价时效配置。
+4. 当前支持 CNY 与 USD，美元需要对应 USD 子账户；同一张卡只有 USD 子账户时，其 CNY 消费不能自动写入 USD 账户。首次入账不进行汇率换算。
 5. 保持 `mail.source_id` 稳定。IMAP 来源认证按连接主机自动选择：当前 `imap.qq.com` 使用 QQ 收件链及 SPF/DKIM/DMARC 结果检查，通过后自动接纳；不自行执行 DKIM 公钥验签。来源缺失、失败或无法判断时进入异常处理。
 
 启动 worker 后自动采集、解析、分类、匹配账户、查重并写入通过校验的交易，包括已有待写任务。缺少配置、匹配歧义或结果不明的记录保留为异常。
@@ -91,23 +102,11 @@ uv sync --frozen
 
 首次常规同步全量扫描所有可选邮箱文件夹，之后按 UID 增量扫描。首次范围上界固定，`status` 的历史完成展示由该范围内来源项派生；增量不扩大首次范围，UIDVALIDITY 改变后建立新的首次范围。采集完成不等于解析或入账完成。`[mail] rescan_days = 7` 指定跨日回扫窗口，设为 `0` 禁用回扫；UIDVALIDITY 改变时重新全量扫描。`sync --since/--until` 仅用于手工补扫，不改变常规扫描游标。
 
-### 从旧版配置迁移
-
-删除 `source_policy` 和 `trusted_authserv_id`；认证由 IMAP 主机自动选择。旧字段明确提示迁移，已有持久来源异常仍需逐项处理，不自动追认旧邮件。
-
-删除 `writes_enabled`、`refund_ownership_confirmed` 和仅服务于旧写入开关的 `historical_boundary_reviewed`。这些旧键会明确报迁移错误，不会忽略原来关闭写入的配置后直接启动自动写入。完成配置迁移并启动 worker 即采用自动处理行为。
-
-删除普通消费的 `[[accounts]]` 配置，在 ezBookkeeping 对应账户的描述中填写银行卡号；已有决定保留冻结账户和币种，不因描述修改自动重新映射。旧账户映射会明确报告迁移提示。`repayments` 仍保留。新交易直接原币入账，旧人民币暂估的已保存任务仍可恢复和结算。
-
-将 TOML 中 `ledger_url/ai_url/ai_model`、`mail.host/port/username` 等服务连接字段移到上述环境变量，并从 TOML 删除旧字段；已有四个秘密变量名保持不变。旧键不会被静默覆盖或忽略，即使同时设置了环境变量，也会报告需要迁移的键与目标变量。程序不会自动改写现有 `data/config.toml` 或 `.env`。旧 `ledger_timeout_seconds`、`ai_timeout_seconds`、`mail.timeout_seconds` 必须删除，无需迁移到环境变量。
-
-目录和日志轮转参数不再对外配置，请删除 TOML 中的 `evidence_dir/report_dir/log_dir/log_max_bytes/log_backups`。旧 `.env` 中的 `EBKI_EVIDENCE_DIR/EBKI_REPORT_DIR/EBKI_LOG_DIR/EBKI_LOG_MAX_BYTES/EBKI_LOG_BACKUPS/EBKI_LOG_LEVEL` 已不读取；日志级别改到 TOML 顶层。Docker 网络和用户直接通过 Docker 配置管理，删除旧 `EBKI_DOCKER_NETWORK/EBKI_UID/EBKI_GID`。使用过自定义目录的部署，切换前应停止 worker，将已有数据迁入固定目录或调整 Compose 的宿主机挂载源，容器数据根路径保持 `/app/data`。
-
 ## 启动和维护
 
 生产 Compose 默认从 GHCR 拉取 `latest` 预构建镜像，支持 Linux AMD64/ARM64；可在 `.env` 中通过 `EBKI_IMAGE` 指定完整版本或 digest 引用。Dockerfile 使用 Python `3.12.13` 和 uv `0.11.21` 多阶段构建，以锁文件安装生产依赖并校验一致性，运行镜像不携带 uv。首次启动前显式迁移；worker 不代替迁移步骤。Compose 自动读取项目 `.env`，并通过 `environment` 注入与本地相同的变量；必需凭据由应用按命令检查，因此可以在尚未填写邮箱和模型凭据时运行迁移。
 
-部署时把服务地址改为已有 Docker 网络内可访问的名称，例如 `http://ezbookkeeping:8080`，不能沿用容器内的 `127.0.0.1`。Compose 使用已有外部网络 `bookkeeping`；实际名称不同时直接修改 `compose.yaml` 中的 `networks.bookkeeping.name`。
+部署时把服务地址改为已有 Docker 网络内可访问的名称，例如 `http://ezbookkeeping:8080`，不能沿用容器内的 `127.0.0.1`。Compose 使用已有外部网络 `ezbookkeeping`；实际名称不同时直接修改 `compose.yaml` 中的 `networks.ezbookkeeping.name`。
 
 容器默认沿用 Dockerfile 的 `10001:10001` 身份。首次部署准备挂载目录及权限：
 
@@ -118,7 +117,7 @@ sudo chown -R 10001:10001 data
 
 如需以宿主机当前用户运行，用 `id -u` 和 `id -g` 查看 ID，在 `compose.yaml` 的 `services.importer` 下显式设置 `user: "实际UID:实际GID"`，并确保挂载目录允许该身份写入。
 
-Compose 统一将宿主机 `./data` 挂载到容器 `/app/data`，应用在 `/app` 工作目录下按需创建 `email`、`reports`、`logs` 子目录。已有默认路径数据无需搬迁；旧部署若只允许子目录写入，还需赋予 `data` 根目录写权限，以便创建子目录。特殊部署可调整挂载源，容器目标保持固定。Compose 不另起 PostgreSQL 服务或创建外部网络；目标库由 `migrate` 按上述权限初始化。Compose 只挂载整个 `data`，配置文件为 `data/config.toml`（容器内 `/app/data/config.toml`），随该目录可写。首次启动前创建 `data` 并将根目录 `config.example.toml` 复制为 `data/config.toml`，填写配置并确保 `10001:10001` 可读取配置、写入数据目录。缺少配置时应用明确失败，不自动生成文件、不读取根目录旧配置；挂载自动创建空目录不等于配置已就绪。
+Compose 统一将宿主机 `./data` 挂载到容器 `/app/data`，应用在 `/app` 工作目录下按需创建 `email`、`reports`、`logs` 子目录。宿主机需赋予 `data` 根目录及子目录写权限，以便创建和写入运行文件。特殊部署可调整挂载源，容器目标保持固定。Compose 不另起 PostgreSQL 服务或创建外部网络；目标库由 `migrate` 按上述权限初始化。Compose 只挂载整个 `data`，配置文件为 `data/config.toml`（容器内 `/app/data/config.toml`），随该目录可写。首次启动前创建 `data` 并将根目录 `config.example.toml` 复制为 `data/config.toml`，填写配置并确保 `10001:10001` 可读取配置、写入数据目录。缺少配置时应用明确失败，不自动生成文件；挂载自动创建空目录不等于配置已就绪。
 
 ```sh
 docker compose pull importer
@@ -129,7 +128,25 @@ docker compose run --rm importer status
 docker compose run --rm importer issues
 ```
 
-worker 正常运行即自动写入；需要暂停时停止 worker（`docker compose stop importer`）。`doctor`、`status`、`issues` 和 `restore-audit` 不执行交易创建。停止或重建容器不会自动回滚远端交易。
+Docker 默认命令为 `run`，直接在PID 1运行单个导入进程，不创建控制台或子worker。维护命令在独立进程执行，关闭输入或命令退出不影响后台：
+
+```sh
+docker compose exec -T importer ebki status
+docker compose exec -T importer ebki issues --format text
+docker compose logs -f importer
+```
+
+| 操作 | 结果 |
+| --- | --- |
+| 单次维护命令结束或中断 | 仅结束当前维护进程；已提交结果保留 |
+| `docker compose stop importer` | 请求停止，默认十秒后仍未退出可被强杀，并保持停止 |
+| `docker compose up -d` | 启动或恢复服务，核实中断的账本操作 |
+| 进程意外退出 | `unless-stopped`自动重启 |
+| Docker服务重启 | 恢复此前未被手动停止的服务 |
+
+不使用attach、TTY或常驻stdin；Compose删除init/stdin_open/tty/stop_grace_period。应用自行处理SIGTERM/SIGINT并关闭数据库连接，没有自有子worker需要回收。
+
+worker 正常运行即自动写入；需要持续暂停时执行 `docker compose stop importer`。`doctor`、`status`、`issues` 和 `restore-audit` 不执行交易创建。停止或重建容器不会自动回滚远端交易。
 
 ```sh
 docker compose run --rm importer sync
@@ -138,44 +155,30 @@ docker compose logs --tail 100 importer
 docker compose restart importer
 ```
 
-`sync` 提交同步请求，不能把命令返回视为全部入账成功。 `--since` 与 `--until` 必须同时提供，格式为 `YYYY-MM-DD`，包含起止两天；筛选依据是 IMAP 邮件接收日期（INTERNALDATE 的日期部分），不是消费发生日期。区间补扫使用独立持久任务，与普通同步串行执行，不改变历史扫描上界、游标或完成状态；重复请求沿用相同来源去重。省略日期时继续原有全历史／增量流程，不附加日期下限。`status`、`issues` 读取数据库中的进度和异常；`doctor` 负责连接诊断，运行成功也不等于邮件到真实写入的完整验收。异常处理在 `./run` 控制台输入 `issues`。
+`sync` 提交同步请求，不能把命令返回视为全部入账成功。 `--since` 与 `--until` 必须同时提供，格式为 `YYYY-MM-DD`，包含起止两天；筛选依据是 IMAP 邮件接收日期（INTERNALDATE 的日期部分），不是消费发生日期。区间补扫使用独立持久任务，与普通同步串行执行，不改变历史扫描上界、游标或完成状态；重复请求沿用相同来源去重。省略日期时继续原有全历史／增量流程，不附加日期下限。`status`、`issues` 读取数据库中的进度和异常；`doctor` 负责连接诊断，运行成功也不等于邮件到真实写入的完整验收。异常处理使用下文的单次 `issues show/candidates/resolve` 命令。
 
-`issues` 使用方向键、Enter 和 Esc 完成分组、对象、操作选择，自动携带对象身份与版本。重复候选支持单笔或本组选中对象的一次复查，复用冻结分类；通过后可能入账，仍重复则暂停。候选对比实时读取账本；关联和确认新建前显示影响，人工判断需要理由。账户修正从现有账户中选择，提交时仍检查币种与状态。邮件忽略或重试作用于整封邮件。未决写入只能记录核实意图，不能重新发送。
-
-状态变化时必须刷新后重新选择，不自动重放原选择。单次 `./run issues` 及 Docker 的 `issues` 仍输出只读 JSON；公开 `resolve` 命令已移除，人工处理统一通过交互菜单。当前诊断没有独立问题 ID，也不提供已解决问题历史。
-
+问题处理以快照中的身份、版本及完整前置状态为准；发生变化明确报冲突，不自动刷新后提交。`issues`仍为只读列表，人工操作改为显式`issues resolve`，不提供独立问题ID或已解决问题历史。原来的菜单选择、确认与理由输入由命令参数表达，业务校验不因无交互而减少。
 
 正式邮件入口只有 IMAP，不提供 `import-eml` 命令；原始证据仍保存为 `.eml`。`Fw:`、`Fwd:`、`转发：` 前缀的已知银行主题也会保存原件并尝试解析，原始主题保留；转发邮件须有可信的来源项或人工接纳，不能因转发者通过认证就自动入账。
 
-数据库连接断开后，worker 会立即以失败退出，避免继续持有失效运行时。Compose 的 `restart: unless-stopped` 会重启进程并重新获取排他锁，未完成写入先进入 UNKNOWN 核实；本地直接运行时需重新执行 worker 命令。
+数据库连接断开后，worker 会立即以失败退出，避免继续持有失效运行时。Compose 的 `restart: unless-stopped` 会重启进程并重新获取排他锁，未完成写入先进入 UNKNOWN 核实；本地直接运行时需重新执行 `./run`，重新启动后台进程。
 
-### 从根目录迁移业务配置
+### 配置文件位置
 
-本地 `ebki`、`./run` 和 Docker 统一默认读取 `data/config.toml`。默认路径仅由 CLI 定义；启动器切换到项目根目录，Docker 保持 `/app` 工作目录并直接运行 `ebki`。显式 `--config` 仍可覆盖默认路径，例如 `./run --config /path/to/custom.toml status`。
-
-迁移前停止旧 worker（Docker 使用 `docker compose stop importer`），并退出旧交互控制台。先确认 `data/config.toml` 尚不存在；若已存在，人工比较并选择需要保留的配置，不要覆盖。然后在部署目录执行：
-
-```sh
-mkdir -p data
-mv config.toml data/config.toml
-# Docker 部署需要；本地运行则保留当前用户可读写权限。
-sudo chown -R 10001:10001 data
-```
-
-保留 `.env`、`config.example.toml` 在根目录。更新镜像与 Compose 后，执行 `doctor` 并重建服务；不要直接覆盖现有配置为示例。程序不会自动迁移或搜索旧文件，新路径缺失会报配置读取错误。配置不再单独只读挂载，应用仍不主动修改它。备份 `data` 现在包含业务配置，`.env` 仍须单独妥善备份。
+本地 CLI 默认读取工作目录下的 `data/config.toml`；`./run` 会定位项目根目录，Docker 工作目录为 `/app`。使用 `--config FILE` 可以显式选择文件。缺少指定文件时明确报错，程序不生成或修改配置。`.env` 和 `config.example.toml` 位于根目录；备份 `data` 包含业务配置，`.env` 需单独妥善备份。
 
 ### 镜像升级与回退
 
 以下流程适用于正式发布后的部署与更新，当前尚无已验收的首发发布物。首次部署从目标版本标签的仓库复制 `compose.yaml`、`config.example.toml` 和 `.env.example` 到独立目录，并参考该版本的 `docs/operations.md`；Compose 默认使用 `latest`。后续升级先阅读 GitHub Release 的版本说明，再对照对应版本的 Compose 和示例配置更新，不直接覆盖现有 `.env` 或 `data/config.toml`。有意修改过外部网络或挂载源时保留部署差异。
 
-1. 阅读最新正式版本的 schema/config 兼容说明，保留 `.env` 的 `EBKI_IMAGE` 为空并执行 `docker compose pull importer` 拉取 `latest`；需要固定目标版本时将该变量设为完整版本或 digest 引用。记录当前运行镜像的版本或 digest，供兼容性允许时回退。拉取失败时先解决问题，仍在运行的旧容器不受影响。
+1. 阅读最新正式版本的 数据库结构说明，保留 `.env` 的 `EBKI_IMAGE` 为空并执行 `docker compose pull importer` 拉取 `latest`；需要固定目标版本时将该变量设为完整版本或 digest 引用。记录当前运行镜像的版本或 digest，供兼容性允许时回退。拉取失败时先解决问题，仍在运行的旧容器不受影响。
 2. 执行 `docker compose stop importer`，确认旧 worker 已停止，且没有并发维护写入，再配对备份 importer 数据库、原始邮件和配置。
 3. 对声明兼容的版本执行 `docker compose run --rm importer migrate` 与 `docker compose run --rm importer doctor`。当前 `migrate` 只支持初始化及同结构校验；结构不兼容时会失败，不得通过删库绕过。未来发生 schema 变化的版本必须另行提供迁移方案。
 4. 全部检查成功后，执行 `docker compose up -d --no-build` 应用更新；仅拉取不会替换运行中的容器。通过 `status`、`issues` 和日志核查恢复情况。
 
-Compose 的 `stop_grace_period: 5m` 是初始运维值。worker 在处理阶段之间响应停止，单次网络请求的超时不等于整批任务的停机上界。应按实际邮件量观察停止耗时，必要时部署方延长等待；超时强杀后的写入结果须由现有恢复与核实流程处理。
+Compose采用默认十秒停止期限。程序在邮件批次、单笔交易、核实任务和报告边界响应停止；正在进行的网络请求仍保留原30秒超时，十秒内不保证完成。超时强杀后，同步任务重新排队，已提交数据保留；账本写入先转UNKNOWN并在下次启动核实，不自动重发。登记后尚未发送的任务也可能待核实，远端查不到不足以证明未发送。报告JSON可能暂时滞后于数据库，强杀可能遗留临时文件；不承诺所有状态和派生文件自动立即恢复。
 
-回退前先停止新 worker。只有旧镜像仍兼容当前数据库结构与配置时，才把 `EBKI_IMAGE` 改回保存的旧版本/digest，执行拉取、诊断与重建。镜像回退不恢复数据库，也不撤销远端账目；涉及恢复备份时按本文“持久化、备份与恢复”流程先核实远端状态。
+回退前先停止新 worker。只有旧镜像仍兼容当前数据库结构时，才把 `EBKI_IMAGE` 改回保存的旧版本/digest，执行拉取、诊断与重建。镜像回退不恢复数据库，也不撤销远端账目；涉及恢复备份时按本文“持久化、备份与恢复”流程先核实远端状态。
 
 ### 镜像构建与发布
 
@@ -198,35 +201,46 @@ gh release view v0.1.0 --repo wait9yan/ezbookkeeping-importer
 
 开发机器从源码构建须显式添加 `-f compose.build.yaml`；生产 Compose 不包含 `build`。不要把 `doctor` 当作健康检查，它不证明 worker 活性。独立 `worker` 与 `worker --once` 入口已移除。项目没有独立 HTTP 端口，也不启动第二个 worker 探活。
 
-## 日志与交互控制台
+## 日志与单次维护命令
 
-worker记录采集、解析、分类、写入、核对及恢复事件。正常进度最多每5秒一次，阶段开始/结束和错误立即输出；空闲轮询保持安静，逐条正常细节通过在 `data/config.toml` 顶层设置 `log_level = "DEBUG"` 并重启查看。JSONL文件保留结构化事件；交互终端用中文标题显示，非交互worker标准输出保持JSON，适合Docker日志收集。
+`./run`或`ebki run`持续运行并输出事件，不创建菜单、提示符或stdin读取循环。非TTY标准输出与`data/logs/worker.jsonl`均为结构化事件；本地TTY日志可用中文展示。日志级别在`data/config.toml`顶层设置，正常进度限频、空闲轮询安静。日志格式和单次命令结果格式独立，状态仍以数据库为准。
 
-本地执行 `./run`，在一个终端中启动 worker、显示日志并接受命令。控制台管理本次启动的 worker，后台进程异常会立即报告；已有 worker 占用同一数据库时启动失败，不会接管已有进程。
+普通维护命令默认JSON，可显式`--format text`输出中文表格；不根据终端状态切换业务行为。错误写stderr；0表示正常完成，1表示运行或业务失败，2表示参数错误，中断用130/143。中断不表示已提交动作被撤销；`restore-audit`和批量复查尤其可能部分完成，需要重新查询。
 
 ```sh
-./run
+./run status --format text
+./run issues --entity-type bank_transactions --code duplicate_candidates --format text
+./run issues show --entity-type bank_transactions --entity-id 交易ID --code duplicate_candidates > selected.json
+./run issues candidates --snapshot selected.json --format text
+./run issues resolve --snapshot selected.json --action link --target-id 已有账单ID --reason '已核对为同一笔'
 ```
 
-支持 `help`、`status`、`issues`、`sync`、`recheck`、`exit`；除交互式 issues 外，业务参数与单次CLI相同，支持Tab补全和本次会话的命令历史。日志从本次启动前的位置继续显示，包含本次 worker 启动事件。
+show输出和`issues --snapshot-out FILE`均采用`snapshot_version: 1`及`items`数组，每项包含issue、state、view。多项不自动选第一项；单项处理时保留所选项的完整数据。state仅为比较前置条件，不会被用来覆盖数据库payload；view仅用于展示。日期与金额经过统一规范化，不能修改快照绕过业务校验。候选查询包含本地冻结决定、远端候选、账户及分类；`--target-id`可查询指定已有账单。
 
-交互控制台使用中文摘要和表格显示结果。`status` 展示采集、解析、交易及任务进度；`issues` 默认进入分组菜单，选择对象后显示可用操作，结果留在界面内，可刷新查看。需要查看交易详情时使用 `issues --entity-type bank_transactions`，也可沿用 `--entity-id` 定位对象。`help` 显示中文命令说明与最少参数示例。单次CLI（例如 `./run status`）继续输出JSON，便于脚本调用。
+| 动作 | 用法与边界 |
+| --- | --- |
+| 重新处理 | `--action retry`；可能重新分类；UNKNOWN只记录核实意图 |
+| 忽略 | `--action ignore`；邮件动作作用整封邮件，检查其全部诊断状态 |
+| 接纳来源 | `--action accept-source`；仅针对当前来源项 |
+| 关联已有交易 | `--action link --target-id ID`；仍校验账户、金额与时间 |
+| 确认另一笔新交易 | `--action confirm-new`；明确允许通过重复候选检查后新建 |
+| 修正账户 | 交易`--action retry --account-id ID`；仍校验币种、状态及账户可用性 |
 
-删除或修正ezBookkeeping中的重复候选后，在控制台执行一次：
+每个resolve必须携带恰好一个有效快照项与非空`--reason`；状态变化报冲突，必须重新查询并决定，不自动重放。可用动作来自同一应用规则，不可处理的对账项保持只读。后台解析提交前也核对邮件状态，不能覆盖已提交的人工忽略。
 
-```text
-recheck
+```sh
+# 无参数表示执行时全库当前符合条件的重复问题。
+./run recheck
+# 精确集合复查：不会把查询后新出现的问题加入此次范围。
+./run issues --entity-type bank_transactions --code duplicate_candidates --snapshot-out selected.json
+./run recheck --snapshot selected.json
+# Docker读取宿主机快照，不需要终端。
+docker compose exec -T importer ebki recheck --snapshot - < selected.json
 ```
 
-该命令批量安排当前重复候选及其复查查询失败对象的一轮检查，无需逐笔填写ID、版本或原因。保留已有分类和冻结决定，不重新调用AI；worker重新完整查询候选，通过正常校验后才入账。仍然重复或查询失败就继续保持问题状态，启动、普通轮询和 `sync` 不会自动反复检查。已入账、已忽略及写入结果不明的交易不会被重新创建。
+限定复查去重并逐对象报告scheduled/already_pending/skipped及原因；合法快照中状态改变的项会跳过，非法文件整体拒绝。不承诺整个批次原子提交。复查复用冻结分类，不增加决定版本；通过后可能入账，仍重复或查询失败则暂停。普通同步不会反复复查。
 
-输入 `exit`、按 Ctrl+C 或关闭输入（EOF）都会一起退出控制台和 worker。程序先停止接收新命令，等待已接受的维护命令和当前处理阶段结束，不再进入后续阶段；等待时仍显示日志。当前阶段可能是批量采集、分类或写入，退出可能需要数分钟，不默认强杀处理进程。
-
-命令执行期间日志仍可显示，重复提交业务命令会明确提示当前忙。独立 `console` 命令和 `quit` 已移除。无人值守运行使用 `./run worker` 或 `docker compose up -d`；只执行一个完整周期可用 `./run worker --once`，该方式也包含实际账本写入。查询和维护使用单次CLI。
-
-`sync` 反馈“已排队”或“已有请求已合并”，不表示采集完成。`recheck` 反馈本次安排、已在处理和跳过数量，不表示已经完成查重或入账。`issues` 菜单反馈具体处理决定；结果不明时仍明确等待核实，不把保存决定显示为账本写入成功。日志中的“采集完成”“写入尝试已登记”“写入已核实”“既有关联已恢复”分别对应不同阶段。核对结果发布与报告文件导出也分别记录。
-
-日志文件仅由worker写入和轮转，控制台只读尾随；状态与问题仍以数据库为准。修改级别需更新 `data/config.toml` 顶层 `log_level` 并重启 worker，控制台不能恢复此前未被记录的DEBUG事件。
+没有独立console/worker/worker --once或exit入口；后台使用信号或Docker stop管理。维护命令只使用自身Runtime/Store，不与后台共享数据库连接，不在退出后留线程继续修改数据。快照中包含业务信息，不能放入运行日志或公开仓库。
 
 ## 持久化、备份与恢复
 

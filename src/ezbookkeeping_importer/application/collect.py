@@ -328,8 +328,12 @@ def collect(
     settings,
     since: date | None = None,
     until: date | None = None,
+    *,
+    should_stop=lambda: False,
 ):
     validate_scan_range(since, until)
+    if should_stop():
+        return None
     bounded = since is not None
     failed_folders = 0
     progress = Progress("collection", source_id=settings.mail.source_id)
@@ -350,6 +354,8 @@ def collect(
         )
         raise
     for folder in folders:
+        if should_stop():
+            return None
         scan_started = time.monotonic()
         emit(
             "mail_scan_started",
@@ -450,6 +456,8 @@ def collect(
         progress.total += pending_total["count"]
         after_uid = 0
         while True:
+            if should_stop():
+                return None
             pending = store.all(
                 """SELECT * FROM email_source_item WHERE source_id=%s AND folder=%s
                 AND uid_validity=%s AND status IN ('pending','failed') AND uid>%s ORDER BY uid LIMIT %s""",
@@ -484,6 +492,8 @@ def collect(
             ignored_ids = []
             candidates = []
             for task in batch:
+                if should_stop():
+                    return None
                 if task["uid"] not in headers_by_uid:
                     _download_failure(store, task, "MissingHeader", "headers_batch")
                     emit(
@@ -519,6 +529,8 @@ def collect(
             # Database failures propagate: rollback preserves all these locations for retry.
             _ignore_email_source_item(store, ignored_ids)
             for task in candidates:
+                if should_stop():
+                    return None
                 try:
                     _process_candidate(store, mail, evidence, settings, folder, task)
                 except LogPersistenceError:
@@ -533,6 +545,8 @@ def collect(
                         **failure_fields(exc, "message_collection_failed", "message"),
                     )
             _collection_batch_progress(store, progress, batch)
+    if should_stop():
+        return None
     progress.finish()
     if failed_folders:
         raise ImporterError(f"{failed_folders} mailbox folders could not be scanned; see issues")

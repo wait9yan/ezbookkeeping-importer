@@ -4,7 +4,7 @@
 
 通过 IMAP 收取银行邮件，自动提取消费与退款、匹配账户、选择分类，并写入你已有的 ezBookkeeping。每月再用银行账单核对已导入的记录，让日常记账少一些手工录入。
 
-这是一个可自行部署的单用户后台服务，附带中文交互式终端。查账、统计和日常修改分类仍在 ezBookkeeping 中完成；导入器没有独立网页，也不需要开放服务端口。
+这是一个可自行部署的单用户后台服务，附带单次维护命令和中文文本展示。查账、统计和日常修改分类仍在 ezBookkeeping 中完成；导入器没有独立网页，也不需要开放服务端口。
 
 [功能与支持范围](#功能与支持范围) · [快速开始](#快速开始) · [Docker 部署](#docker-部署) · [日常使用](#日常使用) · [常见问题](#常见问题) · [详细运维文档](docs/operations.md)
 
@@ -13,7 +13,7 @@
 - **自动收取邮件**：首次扫描邮箱历史邮件，之后增量同步；只下载银行候选邮件的全文，并保存原始邮件以便核查。
 - **按卡号和币种匹配账户**：人民币、美元消费分别进入对应账户，退款记为负支出。配置还款账户后，可将成功还款记为转账。
 - **规则优先，AI 辅助分类**：你指定的商户规则优先，未命中时由模型从已有分类中选择；也可以完全使用规则。
-- **查重与异常处理**：发现疑似重复、账户歧义或不可信来源时暂停相关记录，通过终端菜单核实后继续。
+- **查重与异常处理**：发现疑似重复、账户歧义或不可信来源时暂停相关记录，通过维护命令核实后继续。
 - **月账单核对**：对照银行结算记录检查导入结果；符合条件的美元消费可按银行实际人民币结算金额更新。
 - **中断后恢复**：保存采集和处理进度。写入结果不明时先查询账本核实，避免直接重发创建请求。
 
@@ -28,7 +28,7 @@
 
 目前不支持其他银行模板、CSV/PDF 导入或手工 `.eml` 导入。其他 IMAP 主机可以连接采集，但尚未适配的来源认证会形成待处理问题。月账单用于核对，不会仅凭月账单自动补建缺少日报证据的消费。
 
-> **首次运行前请注意：** 当前版本为 `0.1.0`。启动 `./run`、`worker` 或 Docker 服务后，会自动处理历史邮件和已有待写任务，并实际写入账本，没有 dry-run 模式。请先核对历史交易、信用卡初始负债和其他导入渠道，避免重复记账。
+> **首次运行前请注意：** 当前版本为 `0.1.0`。启动 `./run` 或 Docker 服务后，会自动处理历史邮件和已有待写任务，并实际写入账本，没有 dry-run 模式。请先核对历史交易、信用卡初始负债和其他导入渠道，避免重复记账。
 
 ## 如何工作
 
@@ -110,7 +110,7 @@ classification_mode = "rules_only"
 
 `migrate` 初始化 importer 数据库。若数据库不存在，会尝试创建连接串中指定的数据库，此时账号需要 `CREATEDB` 和同实例 `postgres` 维护库的连接权限；也可由管理员预建空库。建表及同版本结构校验需要相应 schema 权限和目标数据库的 `CREATE` 权限。
 
-当前只支持空库初始化和同版本重复初始化，不会自动升级旧数据库或清除已有数据。详细权限与迁移说明见[运维文档](docs/operations.md#配置与本地开发)。
+当前只支持空库初始化和同版本重复初始化，不会自动升级旧数据库或清除已有数据。详细权限与初始化说明见[运维文档](docs/operations.md#配置与本地开发)。
 
 `doctor` 校验启动配置并只读连接数据库和 ezBookkeeping。它**不连接 IMAP、不调用模型，也不测试实际入账**。
 
@@ -122,9 +122,9 @@ classification_mode = "rules_only"
 ./run
 ```
 
-这会同时启动后台 worker 和中文交互控制台。首次扫描所有可选 IMAP 文件夹；后续按 UID 增量采集。上海时间 17:00 至午夜每 10 分钟检查，其余时段每小时检查，重启会立即恢复处理。
+这会在当前进程持续运行导入任务，不启动交互控制台。首次扫描所有可选 IMAP 文件夹；后续按 UID 增量采集。上海时间 17:00 至午夜每 10 分钟检查，其余时段每小时检查，重启会立即恢复处理。
 
-在控制台输入 `status` 查看进度，输入 `issues` 处理异常，并到 ezBookkeeping 核对实际生成的账目。采集完成不等于全部入账成功。输入 `exit` 会一起退出控制台和 worker；当前处理阶段结束前可能需要等待数分钟。
+在另一终端执行 `./run status` 查看进度、`./run issues` 查看问题，并到 ezBookkeeping 核对实际账目。采集完成不等于全部入账成功。本地按 Ctrl+C 请求停止；未确定的账本结果在下次启动时核实，不直接重发。
 
 ## Docker 部署
 
@@ -142,9 +142,9 @@ cp config.example.toml data/config.toml
 
 按上面的步骤填写服务连接、业务配置，准备账户和分类。已有配置不要重复覆盖。生产 [compose.yaml](compose.yaml) 默认拉取预构建镜像 `latest`，该标签仅在正式版本发布时更新；需要固定版本或回退时，在 `.env` 设置 `EBKI_IMAGE` 为完整版本或 digest 引用。
 
-Compose **只启动 importer**，连接现有外部网络 `bookkeeping`。请准备该网络，并确保 PostgreSQL 和 ezBookkeeping 可从容器访问；实际网络名不同时，修改 `networks.bookkeeping.name`。服务地址应填写容器能访问的主机名或 IP，容器内的 `127.0.0.1` 指向 importer 自己。
+Compose **只启动 importer**，连接现有外部网络 `ezbookkeeping`。请准备该网络，并确保 PostgreSQL 和 ezBookkeeping 可从容器访问；实际网络名不同时，修改 `networks.ezbookkeeping.name`。服务地址应填写容器能访问的主机名或 IP，容器内的 `127.0.0.1` 指向 importer 自己。
 
-容器使用 `10001:10001` 身份，统一将 `./data` 挂载到 `/app/data`，按需创建 `email`、`reports`、`logs` 子目录。已有默认路径数据无需搬迁；旧部署若只给子目录写权限，还需赋予 `data` 根目录写权限。Compose 仅挂载整个 `data` 目录，配置位于 `data/config.toml`，容器内为 `/app/data/config.toml`。首次启动前按上面的步骤复制示例配置；程序不会自动生成配置，也不会回退读取根目录的旧文件。配置随数据目录可写，部署前准备写权限：
+容器使用 `10001:10001` 身份，统一将 `./data` 挂载到 `/app/data`，按需创建 `email`、`reports`、`logs` 子目录。宿主机需赋予 `data` 根目录及子目录写权限。Compose 仅挂载整个 `data` 目录，配置位于 `data/config.toml`，容器内为 `/app/data/config.toml`。首次启动前按上面的步骤复制示例配置；程序不会自动生成配置。配置随数据目录可写，部署前准备写权限：
 
 ```sh
 mkdir -p data
@@ -163,11 +163,21 @@ docker compose run --rm importer status
 docker compose logs --tail 100 importer
 ```
 
-`migrate` 只支持空库初始化与同结构校验，不是自动升级旧数据库的工具；`doctor` 不检查 worker 活性或 IMAP/AI 连通性。需要暂停导入时执行 `docker compose stop importer`。Compose 为停止预留 5 分钟，但处理大批次可能更久；这不是停机时间保证。
+容器默认运行单进程 `ebki run`，不依赖终端和标准输入。维护使用独立命令，执行完退出，不影响后台导入：
+
+```sh
+docker compose exec -T importer ebki status
+docker compose exec -T importer ebki issues
+docker compose logs -f importer
+```
+
+持续暂停执行 `docker compose stop importer`，恢复执行 `docker compose up -d`。保留 `restart: unless-stopped`，Docker 重启会恢复此前未被手动停止的服务。Compose 不设置 `init`、`stdin_open`、`tty` 或 `stop_grace_period`，停止采用 Docker 默认十秒期限；超过期限可能强制终止，下次启动先核实未确定的账本写入，无法确认的保留为 `UNKNOWN`，不会盲目重发。`docker logs` 和 `data/logs/worker.jsonl` 提供结构化运行事件。
+
+`migrate` 只支持空库初始化与同结构校验；`doctor` 不检查 worker 活性或 IMAP/AI 连通性。
 
 升级前执行 `docker compose pull importer` 拉取最新正式镜像，停止旧 worker，配对备份数据库、邮件和配置，确认版本兼容后再校验并执行 `docker compose up -d --no-build` 应用更新；仅拉取镜像不会更新正在运行的容器。复用原数据库和 `data/`，不要并行运行两个 worker。回退镜像不会撤销已写入 ezBookkeeping 的交易，操作步骤见[升级与回退](docs/operations.md#镜像升级与回退)。
 
-旧部署升级前先停止 importer，把原根目录的 `config.toml` 移到 `data/config.toml`，再重建容器；目标文件已存在时先人工核对，不要覆盖。本地 `./run` 与 Docker 现在使用相同默认路径，仍可通过 `--config` 显式指定其他文件。`.env` 和可分享的 `config.example.toml` 继续保留在根目录。
+本地 `./run` 与 Docker 默认使用 `data/config.toml`，可通过 `--config` 显式指定其他文件。`.env` 和可分享的 `config.example.toml` 位于根目录。
 
 从源码开发时，显式使用构建覆盖文件：
 
@@ -181,31 +191,41 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --no-build
 
 ## 日常使用
 
-在 `./run` 的交互控制台中输入：
-
-| 命令 | 作用 |
-| --- | --- |
-| `status` | 查看采集、解析、交易和任务进度 |
-| `issues` | 打开问题菜单，用方向键、Enter 和 Esc 选择对象与处理方式 |
-| `sync` | 请求一次同步，由 worker 执行 |
-| `recheck` | 对当前疑似重复及其查询失败记录安排一次复查，通过检查后可继续入账 |
-| `help` | 查看命令说明 |
-| `exit` | 退出控制台并停止本次启动的 worker |
-
-问题菜单支持查看重复候选、关联已有交易、确认新建、修正账户，以及接纳、忽略或重试邮件。可用操作取决于当前状态；写入结果不明的记录需要先核实，不能直接重新创建。
-
-脚本或另一终端可使用单次命令，输出为 JSON：
+在 shell 中执行单次命令，默认输出 JSON，需要中文表格时显式加 `--format text`：
 
 ```sh
-./run status
-./run issues
+./run status --format text
+./run issues --format text
 ./run sync --since 2026-06-01 --until 2026-06-30
 ./run recheck
 ```
 
-日期补扫按**邮件接收日期**筛选，包含起止两天，两个日期必须同时提供；它不限定消费日期，也不改变常规同步的全历史范围。`sync` 和 `recheck` 返回只代表请求已安排，后续处理需要 worker 运行。
+无参数 `recheck` 安排全库当前符合条件的重复候选复查；返回只代表请求已安排，后续处理依赖后台服务。日期补扫按**邮件接收日期**筛选，包含起止两天，两个日期必须同时提供，不限定消费日期，也不改变常规自动扫描范围。
 
-无人值守可使用 `./run worker`。`./run worker --once` 只运行一个周期，**同样会实际写入账本**。同一数据库只允许一个 worker；已有 Docker worker 时，不要再用本地 `./run` 启动第二个。如需 Docker 中的人工交互，先停止后台服务，再运行 `docker compose run --rm importer run`，退出后用 `docker compose up -d` 恢复后台运行。
+人工处理使用查看时的快照，避免后台状态变化后误操作。以下 `交易ID`、`已有账单ID` 应替换成查询到的真实值：
+
+```sh
+./run issues show --entity-type bank_transactions --entity-id 交易ID --code duplicate_candidates > selected.json
+./run issues candidates --snapshot selected.json --format text
+./run issues resolve --snapshot selected.json --action link --target-id 已有账单ID --reason '已核对为同一笔交易'
+```
+
+单对象处理要求快照恰好一项；遇到多条诊断时，保留选中项的完整 `issue/state/view` 内容，不能用列表序号作为持久身份。关联已有账单、确认新建、忽略、接纳来源和重新处理分别使用 `link/confirm-new/ignore/accept-source/retry`；修正账户使用交易 `retry --account-id 账户ID`。每个处理动作必须填写非空理由，实际可用动作由当前状态决定。过期快照会报冲突，必须重新查看，不自动重放。
+
+仅复查选定集合时先导出快照，再明确提交该集合：
+
+```sh
+./run issues --entity-type bank_transactions --code duplicate_candidates --snapshot-out selected.json
+./run recheck --snapshot selected.json
+```
+
+Docker 内采用相同参数。宿主机快照可以从标准输入传入：
+
+```sh
+docker compose exec -T importer ebki recheck --snapshot - < selected.json
+```
+
+快照含业务信息，请妥善保存。命令中断可能已有部分结果提交，应重新查询，不能假定全部回滚。运行入口只有 `run`，没有 `console`、`worker`、`worker --once`、`exit` 命令；不要使用 `attach` 操作服务。完整命令和停止恢复说明见[运维文档](docs/operations.md#日志与单次维护命令)。
 
 ## 数据与隐私
 
@@ -226,7 +246,7 @@ AI 分类会把交易内部标识、商户文本和候选分类的 ID、完整�
 
 **为什么 `./run issues` 没有菜单？**
 
-单次 CLI 只输出 JSON。人工处理入口是在 `./run` 启动的交互控制台里输入 `issues`。
+项目已改为单次命令：`issues` 列表、`issues show` 查看快照、`issues candidates` 对比、`issues resolve` 处理。需要中文展示可加 `--format text`。
 
 **能只导入某个日期之后的交易吗？**
 
@@ -248,18 +268,18 @@ AI 分类会把交易内部标识、商户文本和候选分类的 ID、完整�
 
 不会自动恢复被删除的远端交易。写入结果不明时也不会直接重发；程序会先按来源标记查询并核实。
 
-旧版配置的移除项、数据库结构和详细运行行为见[配置与运维参考](docs/operations.md)。
+完整配置契约、数据库结构和详细运行行为见[配置与运维参考](docs/operations.md)。
 
 ## 开发与验证
 
-项目使用 Python、Pydantic、PostgreSQL、httpx、Beautiful Soup、Rich 和 prompt-toolkit。代码按职责分层：
+项目使用 Python、Pydantic、PostgreSQL、httpx、Beautiful Soup、Rich。代码按职责分层：
 
 ```text
 src/ezbookkeeping_importer/
 ├── domain/        # 交易、金额、账户与邮件身份
 ├── application/   # 采集、解析、分类、写入、核对与人工处理
 ├── adapters/      # IMAP、招行模板、模型、ezBookkeeping 和 PostgreSQL
-└── entrypoints/   # CLI、交互控制台与后台 worker
+└── entrypoints/   # 单次维护CLI与后台运行入口
 migrations/        # 数据库初始化 SQL
 tests/             # 单元测试与集成测试
 ```

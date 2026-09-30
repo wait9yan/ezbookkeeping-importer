@@ -21,6 +21,7 @@ def resolve(
     account_id: str | None = None,
     code: str | None = None,
     expected_issue: dict | None = None,
+    expected_snapshot: dict | None = None,
 ):
     if not reason.strip():
         raise ImporterError("a reason is required")
@@ -62,6 +63,10 @@ def resolve(
         "code": code,
     }
     with store.transaction():
+        if expected_snapshot is not None:
+            from .issue_snapshot import assert_snapshot_item
+
+            assert_snapshot_item(store, expected_snapshot, lock=True)
         if expected_issue is not None:
             key = "report_key" if entity_type == "bank_report" else "id"
             # entity_type is validated above; lock before comparing the displayed snapshot.

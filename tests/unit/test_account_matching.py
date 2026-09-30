@@ -10,7 +10,7 @@ from ezbookkeeping_importer.domain.accounts import (
     decision_currency,
 )
 from ezbookkeeping_importer.application.classify import decide, refresh_classification
-from ezbookkeeping_importer.config import Settings, MailSettings, load_settings, ConfigurationError
+from ezbookkeeping_importer.config import Settings, MailSettings
 from ezbookkeeping_importer.domain.errors import ImporterError
 
 CARD = "4444333322221234"
@@ -145,12 +145,3 @@ def test_legacy_decision_currency_is_cny_not_original_usd():
     assert decision_currency(tx) == "CNY"
     with pytest.raises(ImporterError, match="persisted"):
         decision_currency(transaction())
-
-
-def test_retired_account_mapping_has_explicit_migration_error(tmp_path, monkeypatch):
-    path = tmp_path / "business.toml"
-    path.write_text('timezone="Asia/Shanghai"\n[[accounts]]\ncard_reference="SECRET_CARD"\n')
-    with pytest.raises(ConfigurationError) as error:
-        load_settings(str(path), command="migrate")
-    assert "accounts ->" in str(error.value)
-    assert "SECRET_CARD" not in str(error.value)

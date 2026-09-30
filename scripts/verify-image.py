@@ -5,6 +5,12 @@ import secrets
 import subprocess
 import time
 import uuid
+import sys
+from pathlib import Path
+
+# Support importlib-based unit tests as well as direct execution.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from image_lifecycle import verify_lifecycle  # noqa: E402
 
 
 SMOKE_CONFIG = '''timezone = "Asia/Shanghai"
@@ -55,7 +61,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-import bs4, httpx, psycopg, pydantic, rich, prompt_toolkit
+import bs4, httpx, psycopg, pydantic, rich
 from ezbookkeeping_importer.adapters.persistence.postgres import SCHEMA
 assert os.getuid() == 10001 and os.getgid() == 10001
 assert Path.cwd() == Path('/app')
@@ -79,6 +85,10 @@ for kind in ('email', 'reports', 'logs'):
                       image]
         for command in ("migrate", "migrate", "status"):
             print(docker(*invocation, command, timeout=60))
+        verify_lifecycle(
+            docker, image, platform_args, network, mounts,
+            f"postgresql://postgres:{password}@{database}/ebki", f"{name}-app",
+        )
         print(f"镜像验证通过：{image} ({platform or '本机架构'})")
     finally:
         # 清理失败也明确呈现，不把残留资源当作成功。

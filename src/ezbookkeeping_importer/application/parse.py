@@ -40,6 +40,8 @@ def _parse_one(store, parser, message, header_issues, parser_version):
         transaction_id(result.report_key, key)
     created = 0
     with store.transaction():
+        if not _message_unchanged(store, message):
+            return "superseded", {}
         store.execute(
             """UPDATE email SET parse_status=%s,parse_issues=%s,
             parser_version=%s,parsed_at=now() WHERE id=%s""",
@@ -154,13 +156,20 @@ def _parse_one(store, parser, message, header_issues, parser_version):
     }
 
 
-def parse_pending(store: Store, parser):
+def _message_unchanged(store, message):
+    current = store.one("SELECT * FROM email WHERE id=%s FOR UPDATE", (message["id"],))
+    return current is not None and current == message
+
+
+def parse_pending(store: Store, parser, should_stop=lambda: False):
     messages = store.all("SELECT * FROM email WHERE parse_status='pending' ORDER BY collected_at")
     if not messages:
         return
     progress = Progress("parse", len(messages))
     emit("parse_started", total=len(messages), stage="parse")
     for message in messages:
+        if should_stop():
+            return
         parser_version = parser.version
         header_issues = [
             issue
@@ -173,6 +182,9 @@ def parse_pending(store: Store, parser):
             raise
         except Exception as exc:
             with store.transaction():
+                if not _message_unchanged(store, message):
+                    progress.advance(superseded=1)
+                    continue
                 saved = store.execute(
                     """UPDATE email SET parse_status='failed',parsed_at=now(),parser_version=%s,parse_issues=%s WHERE id=%s""",
                     (

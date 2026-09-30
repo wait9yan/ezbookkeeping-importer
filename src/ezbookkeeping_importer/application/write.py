@@ -47,10 +47,28 @@ def task_error(store: Store, job: dict, code: str, detail: str):
 
 
 def recover_dispatching(store: Store):
+    stale = []
     with store.transaction():
-        stale = store.all(f"""UPDATE background_task SET status='unknown',error_code='write_unknown',
-            last_error='worker interrupted',updated_at=now() WHERE status='dispatching' AND task_type IN {WRITE_TYPES} RETURNING *""")
-        for job in stale:
+        candidates = store.all(f"""SELECT id,bank_transaction_id FROM background_task
+            WHERE status='dispatching' AND task_type IN {WRITE_TYPES}
+            ORDER BY bank_transaction_id,id""")
+        for candidate in candidates:
+            # Use the same transaction -> task order as manual decisions and writes.
+            store.one(
+                "SELECT id FROM bank_transactions WHERE id=%s FOR UPDATE",
+                (candidate["bank_transaction_id"],),
+            )
+            job = store.one(
+                "SELECT * FROM background_task WHERE id=%s FOR UPDATE", (candidate["id"],)
+            )
+            if not job or job["status"] != "dispatching":
+                continue
+            store.execute(
+                """UPDATE background_task SET status='unknown',error_code='write_unknown',
+                last_error='worker interrupted',updated_at=now() WHERE id=%s""",
+                (job["id"],),
+            )
+            stale.append(job)
             if job["task_type"] == "create":
                 store.execute(
                     "UPDATE bank_transactions SET import_status='unknown' WHERE id=%s",
@@ -174,8 +192,10 @@ def preserved_fields_match(ledger: Ledger, current: dict, payload: dict) -> bool
     return all(observed.get(key) == value for key, value in payload.items())
 
 
-def verify_unknown(store: Store, ledger: Ledger):
+def verify_unknown(store: Store, ledger: Ledger, *, should_stop=lambda: False):
     for job in store.all("SELECT * FROM background_task WHERE status='unknown' ORDER BY id"):
+        if should_stop():
+            return
         try:
             transaction = store.one(
                 "SELECT * FROM bank_transactions WHERE id=%s", (job["bank_transaction_id"],)
@@ -298,9 +318,12 @@ def record_preflight_failure(store: Store, candidate: dict, error: Exception):
         )
 
 
-def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str] | None = None):
-    verify_unknown(store, ledger)
-    if transaction_ids == frozenset():
+def write_queued(
+    store: Store, ledger: Ledger, *, transaction_ids: frozenset[str] | None = None,
+    should_stop=lambda: False,
+):
+    verify_unknown(store, ledger, should_stop=should_stop)
+    if should_stop() or transaction_ids == frozenset():
         return
     query = f"SELECT * FROM background_task WHERE status='queued' AND task_type IN {WRITE_TYPES}"
     params: tuple = ()
@@ -308,6 +331,8 @@ def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str
         params = tuple(sorted(transaction_ids))
         query += " AND bank_transaction_id IN (" + ",".join("%s" for _ in params) + ")"
     for candidate in store.all(query + " ORDER BY id", params):
+        if should_stop():
+            return
         try:
             transaction = store.one(
                 "SELECT * FROM bank_transactions WHERE id=%s", (candidate["bank_transaction_id"],)
@@ -360,6 +385,9 @@ def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str
                 "queued" if job["task_type"] == "create" else "booked"
             ):
                 continue
+            # 登记后必须尽力发送并记录结果；取消只允许发生在登记之前。
+            if should_stop():
+                return
             frozen = (
                 payload if job["task_type"] == "create" else {**job["payload"], "request": payload}
             )
@@ -460,4 +488,4 @@ def write_queued(store: Store, ledger: Ledger, *, transaction_ids: frozenset[str
             error_type=failure if result is None else None,
             next_action="verify_only",
         )
-    verify_unknown(store, ledger)
+    verify_unknown(store, ledger, should_stop=should_stop)

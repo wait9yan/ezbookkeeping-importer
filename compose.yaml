@@ -1,10 +1,7 @@
 services:
   importer:
     image: "${EBKI_IMAGE:-ghcr.io/wait9yan/ezbookkeeping-importer:latest}"
-    command: ["worker"]
     restart: unless-stopped
-    init: true
-    stop_grace_period: 5m
     environment:
       # 必需项由应用按命令检查；migrate 不应要求邮箱或模型凭据。
       EBKI_DATABASE_URL: "${EBKI_DATABASE_URL-}"
@@ -20,7 +17,7 @@ services:
     volumes:
       - ./data:/app/data
     networks:
-      - bookkeeping
+      - ezbookkeeping
     logging:
       driver: local
       options:
@@ -28,6 +25,6 @@ services:
         max-file: "5"
 
 networks:
-  bookkeeping:
+  ezbookkeeping:
     external: true
-    name: "bookkeeping"
+    name: "ezbookkeeping"

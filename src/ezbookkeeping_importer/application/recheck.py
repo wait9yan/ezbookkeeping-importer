@@ -74,3 +74,42 @@ def request_recheck(store: Store, targets: list[dict] | None = None) -> dict[str
             )
             counts["scheduled" if changed.rowcount else "skipped"] += 1
     return counts
+
+
+def request_snapshot_recheck(store: Store, snapshot):
+    """固定快照集合逐项提交；过期对象显式跳过，不扩大筛选范围。"""
+    from ..domain.errors import Conflict, ImporterError
+    from .issue_snapshot import assert_snapshot_item, validate_snapshot
+
+    document = validate_snapshot(snapshot)
+    unique: dict[str, dict] = {}
+    for item in document["items"]:
+        issue = item["issue"]
+        if issue["entity_type"] != "bank_transactions" or issue["code"] not in RECHECK_CODES:
+            raise ImporterError("recheck snapshot requires duplicate bank transaction issues")
+        key = issue["entity_id"]
+        if key in unique and unique[key] != item:
+            raise ImporterError("conflicting snapshots for the same transaction")
+        unique[key] = item
+    counts = {"scheduled": 0, "already_pending": 0, "skipped": 0}
+    results = []
+    for item in unique.values():
+        issue = item["issue"]
+        try:
+            with store.transaction():
+                assert_snapshot_item(store, item, lock=True)
+                result = request_recheck(store, [issue])
+            outcome = next(key for key, count in result.items() if count)
+            reason = "not eligible for duplicate recheck" if outcome == "skipped" else None
+        except Conflict:
+            outcome, reason = "skipped", "snapshot changed; query again"
+        counts[outcome] += 1
+        results.append(
+            {
+                "entity_type": issue["entity_type"],
+                "entity_id": issue["entity_id"],
+                "result": outcome,
+                "reason": reason,
+            }
+        )
+    return {**counts, "items": results}

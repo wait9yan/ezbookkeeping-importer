@@ -46,7 +46,7 @@ def database():
     try:
         store = connect()
         store.migrate()
-        yield SimpleNamespace(store=store, connect=connect)
+        yield SimpleNamespace(store=store, connect=connect, isolated_dsn=isolated_dsn)
     finally:
         for store in stores:
             store.close()

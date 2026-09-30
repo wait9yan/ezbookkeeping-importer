@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from ..adapters.logging import configure_logging
 from ..application.collect import request_sync
-from ..application.write import recover_dispatching
+from ..application.write import recover_dispatching, verify_unknown
 from ..application.service import cycle
 from ..application.events import emit, event_context, failure_fields
 from ..domain.errors import Conflict, ImporterError, LogPersistenceError
@@ -20,15 +20,14 @@ def next_check(now: datetime) -> datetime:
 
 
 class StopSignals:
-    """信号处理器只设置本地标志；日志与跨进程同步留在正常控制流。"""
+    """信号处理器只设置本地标志，日志与资源清理留在正常控制流。"""
 
-    def __init__(self, external=None):
-        self.external = external
+    def __init__(self):
         self.reason: str | None = None
         self.previous = {}
 
     def is_set(self):
-        return self.reason is not None or (self.external is not None and self.external.is_set())
+        return self.reason is not None
 
     def _request(self, signum, frame):
         if self.reason is None:
@@ -44,29 +43,31 @@ class StopSignals:
             signal.signal(sig, handler)
 
 
-def run(runtime, once: bool = False, *, stop_event=None, ready=None, terminal=True):
-    with StopSignals(stop_event) as stopped:
-        _run(runtime, once, stopped, ready, terminal)
+def run(runtime, *, stop_event=None):
+    if stop_event is not None:
+        _run(runtime, stop_event)
+        return
+    with StopSignals() as stopped:
+        _run(runtime, stopped)
 
 
-def _run(runtime, once, stopped, ready, terminal):
+def _run(runtime, stopped):
     if stopped.is_set():
         return
     if not runtime.store.lock_worker():
         raise Conflict("another worker is already running")
-    logger = configure_logging(runtime.settings, terminal=terminal)
+    logger = configure_logging(runtime.settings)
     started = time.monotonic()
     with event_context(run_id=uuid.uuid4().hex):
-        emit("worker_starting", mode="once" if once else "continuous")
+        emit("worker_starting", mode="continuous")
         try:
             recovered = recover_dispatching(runtime.store)
+            verify_unknown(runtime.store, runtime.ledger, should_stop=stopped.is_set)
             if not stopped.is_set():
                 request_sync(runtime.store)
             due = datetime.now(ZoneInfo(runtime.settings.timezone))
             if not stopped.is_set():
                 emit("worker_started", counts={"recovered": recovered}, next_check_at=due.isoformat())
-                if ready is not None:
-                    ready()
             cycle_was_failed = False
             while not stopped.is_set():
                 now = datetime.now(ZoneInfo(runtime.settings.timezone))
@@ -75,10 +76,6 @@ def _run(runtime, once, stopped, ready, terminal):
                     due = next_check(now)
                 try:
                     success = cycle(runtime, logger, should_stop=stopped.is_set)
-                    if once and success is False:
-                        raise ImporterError(
-                            "synchronization failed; persisted tasks were still processed"
-                        )
                 except LogPersistenceError:
                     raise
                 except Exception as exc:
@@ -100,14 +97,10 @@ def _run(runtime, once, stopped, ready, terminal):
                         ),
                     )
                     cycle_was_failed = True
-                    if once:
-                        raise
                 else:
                     if cycle_was_failed and success is True:
                         emit("cycle_recovered", stage="cycle")
                         cycle_was_failed = False
-                if once:
-                    break
                 for _ in range(30):
                     if stopped.is_set():
                         break
@@ -122,7 +115,7 @@ def _run(runtime, once, stopped, ready, terminal):
                 **failure_fields(exc, "worker_failed", getattr(exc, "processing_stage", "worker")),
             )
             raise
-        stop_reason = stopped.reason or ("requested" if stopped.is_set() else "once")
+        stop_reason = getattr(stopped, "reason", None) or "requested"
         if stopped.is_set():
             emit("worker_stop_requested", reason=stop_reason)
         emit(

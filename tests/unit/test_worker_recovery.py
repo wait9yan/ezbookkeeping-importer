@@ -19,11 +19,12 @@ def setup_worker(monkeypatch, caplog):
     monkeypatch.setattr(logger, "propagate", False)
     monkeypatch.setattr(logger, "disabled", False)
     caplog.set_level(logging.INFO, logger="ebki")
-    runtime = SimpleNamespace(store=store, settings=SimpleNamespace(timezone="Asia/Shanghai"))
+    runtime = SimpleNamespace(store=store, ledger=Mock(), settings=SimpleNamespace(timezone="Asia/Shanghai"))
     monkeypatch.setattr(worker, "configure_logging", lambda _, **kwargs: logger)
     recovery = Mock(return_value=0)
     monkeypatch.setattr(worker, "recover_dispatching", recovery)
     monkeypatch.setattr(worker, "request_sync", Mock())
+    monkeypatch.setattr(worker, "verify_unknown", Mock())
     monkeypatch.setattr(worker.signal, "signal", Mock())
     monkeypatch.setattr(
         worker.time, "sleep", lambda _: pytest.fail("broken connection must exit without waiting")

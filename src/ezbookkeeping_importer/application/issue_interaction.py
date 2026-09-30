@@ -35,16 +35,10 @@ def resolution_actions(entity_type, row, *, active=False):
 
 
 def issue_detail(store, selected):
-    current = next(
-        (
-            item
-            for item in issues(store, selected["entity_type"], selected["entity_id"])
-            if item["code"] == selected["code"]
-        ),
-        None,
-    )
-    if current != selected:
+    current_issues = issues(store, selected["entity_type"], selected["entity_id"])
+    if selected not in current_issues:
         raise Conflict("问题状态已经变化，请刷新后重新选择")
+    current = selected
     tables = {
         "email_source_item": "id",
         "email": "id",
@@ -66,9 +60,20 @@ def issue_detail(store, selected):
             (row["id"],),
         )
     )
+    actions = issue_actions(kind, row, selected["code"], active=active)
+    return {
+        "issue": current,
+        "actions": actions,
+        "decision": row.get("import_decision") or {},
+        "active": active,
+    }
+
+
+def issue_actions(kind, row, code, *, active=False):
+    """展示和单次提交共用同一动作资格，包括只读状态与复查替代。"""
     actions = resolution_actions(kind, row, active=active)
     if kind == "bank_transactions" and row["import_status"] in {"pending", "queued", "ignored"}:
-        actions = []
+        return []
     decision = row.get("import_decision") or {}
     if (
         kind == "bank_transactions"
@@ -76,10 +81,10 @@ def issue_detail(store, selected):
         and row["import_status"] == "issue"
         and not row["ledger_transaction_id"]
         and decision.get("payload")
-        and selected["code"] in RECHECK_CODES
+        and code in RECHECK_CODES
     ):
-        actions = ["recheck", *[a for a in actions if a != "retry"]]
-    return {"issue": current, "actions": actions, "decision": decision, "active": active}
+        return ["recheck", *[a for a in actions if a != "retry"]]
+    return actions
 
 
 def issue_candidates(store, ledger, selected, target_id=None):
@@ -89,11 +94,12 @@ def issue_candidates(store, ledger, selected, target_id=None):
     if target_id:
         ids = [target_id]
     candidates = [{"id": str(key), "transaction": ledger.get(str(key))} for key in ids]
-    # Network I/O holds no row lock. Reject a stale comparison before returning it.
+    accounts, categories = ledger.accounts(), ledger.categories()
+    # Revalidate after every remote read, including account/category lookups.
     issue_detail(store, selected)
     return {
         **detail,
         "candidates": candidates,
-        "accounts": ledger.accounts(),
-        "categories": ledger.categories(),
+        "accounts": accounts,
+        "categories": categories,
     }

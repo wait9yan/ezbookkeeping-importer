@@ -431,13 +431,16 @@ def write_report(store: Store, report_key: str, report_dir: Path):
 
 
 def run_reports(
-    store: Store, ledger: Ledger, report_dir: Path, now: datetime, force: bool
+    store: Store, ledger: Ledger, report_dir: Path, now: datetime, force: bool,
+    *, should_stop=lambda: False,
 ) -> tuple[bool, bool]:
     ran = False
     queries_succeeded = True
     for key in store.all(
         "SELECT report_key FROM bank_report WHERE report_type='monthly' ORDER BY report_key"
     ):
+        if should_stop():
+            return ran, queries_succeeded
         with store.transaction():
             report, transactions, fingerprint = snapshot(store, key["report_key"])
         if (
@@ -550,9 +553,13 @@ def run_reports(
 
 
 def reconcile_if_due(
-    store: Store, ledger: Ledger, report_dir: Path, now: datetime | None = None
+    store: Store, ledger: Ledger, report_dir: Path, now: datetime | None = None,
+    *, should_stop=lambda: False,
 ) -> bool:
-    return run_reports(store, ledger, report_dir, now or datetime.now(timezone.utc), False)[0]
+    return run_reports(
+        store, ledger, report_dir, now or datetime.now(timezone.utc), False,
+        should_stop=should_stop,
+    )[0]
 
 
 def reconcile(store: Store, ledger: Ledger, report_dir: Path):

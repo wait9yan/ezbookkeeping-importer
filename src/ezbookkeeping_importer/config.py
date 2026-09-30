@@ -25,13 +25,16 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
 
-class MailSettings(StrictModel):
+class BusinessMailSettings(StrictModel):
+    source_id: str
+    rescan_days: int = Field(default=7, ge=0, strict=True)
+
+
+class MailSettings(BusinessMailSettings):
     host: str = "imap.qq.com"
     port: int = Field(default=993, ge=1, le=65535)
     username: str = ""
     password: SecretStr = SecretStr("")
-    source_id: str
-    rescan_days: int = Field(default=7, ge=0, strict=True)
 
     @field_validator("host")
     @classmethod
@@ -55,26 +58,15 @@ class Rule(StrictModel):
     category_id: str
 
 
-class Settings(StrictModel):
-    database_url: SecretStr = SecretStr("")
-    ledger_url: str = ""
-    ledger_token: SecretStr = SecretStr("")
-    mail: MailSettings
+class BusinessSettings(StrictModel):
+    mail: BusinessMailSettings
     timezone: str
     date_only_time: time | None = None
     repayment_ownership_confirmed: bool = False
-    evidence_dir: Path = Path("data/email")
-    report_dir: Path = Path("data/reports")
-    log_dir: Path = Path("data/logs")
     log_level: str = "INFO"
-    log_max_bytes: int = Field(default=10_485_760, gt=0)
-    log_backups: int = Field(default=5, ge=1)
     repayments: tuple[RepaymentMapping, ...] = ()
     rules: tuple[Rule, ...] = ()
     classification_mode: str = "ai"
-    ai_url: str | None = None
-    ai_model: str | None = None
-    ai_token: SecretStr = SecretStr("")
 
     @field_validator("log_level")
     @classmethod
@@ -85,6 +77,29 @@ class Settings(StrictModel):
                 "config_log_level", "must be DEBUG, INFO, WARNING, ERROR or CRITICAL"
             )
         return value
+
+    @model_validator(mode="after")
+    def validate_choices(self):
+        if self.timezone != "Asia/Shanghai":
+            raise PydanticCustomError("config_timezone", "must be Asia/Shanghai")
+        if self.classification_mode not in {"ai", "rules_only"}:
+            raise PydanticCustomError("config_classification_mode", "must be ai or rules_only")
+        return self
+
+
+class Settings(BusinessSettings):
+    database_url: SecretStr = SecretStr("")
+    ledger_url: str = ""
+    ledger_token: SecretStr = SecretStr("")
+    mail: MailSettings
+    evidence_dir: Path = Path("data/email")
+    report_dir: Path = Path("data/reports")
+    log_dir: Path = Path("data/logs")
+    log_max_bytes: int = Field(default=10_485_760, gt=0)
+    log_backups: int = Field(default=5, ge=1)
+    ai_url: str | None = None
+    ai_model: str | None = None
+    ai_token: SecretStr = SecretStr("")
 
     @field_validator("ledger_url", "ai_url")
     @classmethod
@@ -119,14 +134,6 @@ class Settings(StrictModel):
             raise PydanticCustomError("config_directory", "must be nonempty without NUL characters")
         return value
 
-    @model_validator(mode="after")
-    def validate_choices(self):
-        if self.timezone != "Asia/Shanghai":
-            raise PydanticCustomError("config_timezone", "must be Asia/Shanghai")
-        if self.classification_mode not in {"ai", "rules_only"}:
-            raise PydanticCustomError("config_classification_mode", "must be ai or rules_only")
-        return self
-
 
 class ConfigurationError(ImporterError):
     """Configuration diagnostics contain field names and safe reasons, never inputs."""
@@ -155,7 +162,7 @@ def command_capabilities(
     account_id: str | None = None,
 ) -> frozenset[str]:
     capabilities = {"database"}
-    if command in {"run", "worker", "doctor"}:
+    if command in {"run", "doctor"}:
         capabilities.update({"ledger", "mail"})
         if classification_mode == "ai":
             capabilities.add("ai")
@@ -165,7 +172,7 @@ def command_capabilities(
         raise ConfigurationError("unknown command dependency profile")
     if command == "migrate":
         capabilities.add("create_database")
-    if command in {"run", "worker"}:
+    if command == "run":
         capabilities.update({"evidence", "pipeline"})
     return frozenset(capabilities)
 
@@ -214,9 +221,6 @@ SAFE_VALIDATION_REASONS = {
     "int_parsing": "must be an integer",
     "int_from_float": "must be an integer",
     "int_type": "must be an integer",
-    "float_parsing": "must be a finite positive number",
-    "float_type": "must be a finite positive number",
-    "finite_number": "must be finite",
     "greater_than": "must be greater than zero",
     "greater_than_equal": "must be at least one",
     "less_than_equal": "must be at most 65535",
@@ -237,7 +241,8 @@ def _safe_validation_error(exc: ValidationError) -> ConfigurationError:
     for error in exc.errors(include_input=False, include_context=False, include_url=False):
         code = error["type"]
         field = BUSINESS_ERROR_FIELDS.get(code, ".".join(str(part) for part in error["loc"]))
-        name = ENV_FIELDS.get(field, field or "business configuration")
+        name = field if code == "extra_forbidden" else ENV_FIELDS.get(field, field)
+        name = name or "business configuration"
         # config_* errors are defined above with constant messages and no input arguments.
         # Other Pydantic messages are replaced with controlled reasons instead of echoed.
         reason = (
@@ -250,7 +255,7 @@ def _safe_validation_error(exc: ValidationError) -> ConfigurationError:
 
 
 def load_settings(
-    path: str, *, command: str = "worker", action: str | None = None, account_id: str | None = None
+    path: str, *, command: str = "run", action: str | None = None, account_id: str | None = None
 ) -> Settings:
     try:
         with open(path, "rb") as file:
@@ -259,41 +264,10 @@ def load_settings(
         raise ConfigurationError("business configuration: invalid TOML syntax") from None
     except OSError:
         raise ConfigurationError("business configuration file cannot be read") from None
-    retired = []
-    for field in ("ledger_timeout_seconds", "ai_timeout_seconds", "mail.timeout_seconds"):
-        parts = field.split(".")
-        owner = data if len(parts) == 1 else data.get(parts[0], {})
-        if isinstance(owner, dict) and parts[-1] in owner:
-            retired.append(f"{field} -> remove; service timeouts are fixed at 30 seconds")
-    for field in ("evidence_dir", "report_dir", "log_dir", "log_max_bytes", "log_backups"):
-        if field in data:
-            retired.append(f"{field} -> remove; runtime directories and log rotation are fixed")
-    for field in ("writes_enabled", "refund_ownership_confirmed", "historical_boundary_reviewed"):
-        if field in data:
-            retired.append(
-                f"{field} -> remove; worker automatically processes validated transactions"
-            )
-    for field in ("source_policy", "trusted_authserv_id"):
-        if field in data:
-            retired.append(
-                f"{field} -> remove; source authentication is selected from the IMAP host"
-            )
-    if "accounts" in data:
-        retired.append(
-            "accounts -> remove this mapping and put card numbers in ezBookkeeping account comments"
-        )
-    if retired:
-        raise ConfigurationError("retired TOML settings: " + "; ".join(retired))
-    moved = []
-    for field, variable in ENV_FIELDS.items():
-        parts = field.split(".")
-        owner = data if len(parts) == 1 else data.get(parts[0], {})
-        if isinstance(owner, dict) and parts[-1] in owner:
-            moved.append(f"{field} -> {variable}")
-    if moved:
-        raise ConfigurationError(
-            "move service TOML fields to environment: " + "; ".join(moved)
-        )
+    try:
+        data = BusinessSettings.model_validate(data).model_dump()
+    except ValidationError as exc:
+        raise _safe_validation_error(exc) from None
     for field, variable in ENV_FIELDS.items():
         if variable not in os.environ:
             continue
@@ -302,10 +276,7 @@ def load_settings(
         if len(parts) == 1:
             data[field] = value
         else:
-            owner = data.setdefault(parts[0], {})
-            if not isinstance(owner, dict):
-                raise ConfigurationError("mail: expected a business configuration table")
-            owner[parts[1]] = value
+            data[parts[0]][parts[1]] = value
     try:
         settings = Settings.model_validate(data)
     except ValidationError as exc:

@@ -82,8 +82,8 @@ def test_disconnect_after_external_commit_exits_and_restart_verifies(
     store, ledger = database.store, pipeline.Ledger()
     pipeline.queue(store, tmp_path, settings, ledger)
     logger = Mock()
-    runtime = SimpleNamespace(store=store, settings=settings)
-    monkeypatch.setattr(worker, "configure_logging", lambda _, *, terminal: logger)
+    runtime = SimpleNamespace(store=store, settings=settings, ledger=ledger)
+    monkeypatch.setattr(worker, "configure_logging", lambda _, **kwargs: logger)
     monkeypatch.setattr(worker.signal, "signal", Mock())
     monkeypatch.setattr(worker.time, "sleep", lambda _: pytest.fail("must exit immediately"))
     ledger.before_create = store.close

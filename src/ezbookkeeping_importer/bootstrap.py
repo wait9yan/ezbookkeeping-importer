@@ -16,7 +16,7 @@ class Runtime:
         self,
         settings: Settings,
         *,
-        command: str = "worker",
+        command: str = "run",
         action: str | None = None,
         account_id: str | None = None,
     ):

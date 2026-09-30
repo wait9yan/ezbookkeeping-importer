@@ -199,13 +199,33 @@ def test_resolve_reports_decision_and_unknown_intent_separately():
     assert "处理决定已保存" not in unknown
 
 
-def test_help_covers_minimal_commands_and_side_effects_without_argparse_dump():
+
+
+def test_comparison_displays_transfer_currency_and_missing_target():
     stream = StringIO()
-    display = Console(file=stream, width=100, color_system=None)
-    for command in (None, "recheck", "issues", "exit"):
-        presentation.render_help(display, command)
+    screen = Console(file=stream, width=120, color_system=None)
+    presentation.comparison(
+        screen,
+        {
+            "accounts": [
+                {"id": "a", "name": "人民币", "currency": "CNY"},
+                {"id": "b", "name": "美元", "currency": "USD"},
+            ],
+            "categories": [{"id": "c", "path": "其他 → 转账"}],
+            "decision": {
+                "payload": {
+                    "type": 4,
+                    "sourceAccountId": "a",
+                    "destinationAccountId": "b",
+                    "sourceAmount": 12300,
+                    "destinationAmount": 1700,
+                    "categoryId": "c",
+                }
+            },
+            "candidates": [{"id": "missing\x1b[2J", "transaction": None}],
+        },
+    )
     value = stream.getvalue()
-    for expected in ("recheck", "一次", "可能入账", "不", "--entity-id ID",
-                     "Ctrl+C", "console 和 worker"):
-        assert expected in value
-    assert "usage:" not in value and "options:" not in value and "quit" not in value
+    assert "123 CNY" in value and "17 USD" in value
+    assert "远端已不存在" in value and "其他 → 转账" in value
+    assert "\x1b" not in value

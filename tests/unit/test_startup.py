@@ -1,245 +1,75 @@
-"""使用真实 spawn 与合成日志验证生命周期；不连接数据库或外部服务。"""
-
-import asyncio
-from io import StringIO
-import json
+"""单进程入口在依赖初始化前安装信号处理，并始终关闭资源。"""
 import os
 from pathlib import Path
 import signal
 import subprocess
-import threading
-import time
-from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
-from rich.console import Console
 
-from ezbookkeeping_importer.entrypoints import cli, console, run, worker
-from ezbookkeeping_importer.domain.errors import ImporterError
-
-
-def append_event(root, event):
-    with (root / "worker.jsonl").open("a") as output:
-        output.write(json.dumps({"level": "INFO", "event": event}) + "\n")
-
-
-def synthetic_worker(config_path, stop_event, connection):
-    root = Path(config_path)
-    with worker.StopSignals(stop_event) as stopping:
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT, signal.SIGTERM})
-        (root / "pid").write_text(str(os.getpid()))
-        append_event(root, "worker_starting")
-        append_event(root, "worker_started")
-        connection.send(("ready", None))
-        while not stopping.is_set():
-            time.sleep(0.01)
-        time.sleep(0.1)  # 合成在途阶段，必须等它完成，不能直接 terminate。
-        append_event(root, "worker_stopped")
-        (root / "finished").touch()
-    connection.close()
-
-
-def startup_wait_worker(config_path, stop_event, connection):
-    root = Path(config_path)
-    (root / "pid").write_text(str(os.getpid()))
-    stop_event.wait(5)
-    (root / "finished").touch()
-    connection.close()
-
-
-def error_worker(config_path, stop_event, connection):
-    connection.send(("error", cli.command_error(RuntimeError("SECRET"))))
-    connection.close()
-    raise SystemExit(1)
-
-
-def early_exit_worker(config_path, stop_event, connection):
-    connection.close()
-
-
-def ready_exit_worker(config_path, stop_event, connection):
-    connection.send(("ready", None))
-    time.sleep(0.1)
-    connection.close()
-
-
-class Session:
-    def __init__(self, *lines):
-        self.lines = list(lines)
-        self.prompts = 0
-
-    async def prompt_async(self, prompt, **kwargs):
-        self.prompts += 1
-        if not self.lines:
-            await asyncio.Future()
-        item = self.lines.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return item
-
-
-def display():
-    output = StringIO()
-    return Console(file=output, width=200, color_system=None), output
-
-
-def settings(root, level="INFO"):
-    return SimpleNamespace(log_dir=root, log_level=level)
-
-
-async def until(predicate):
-    async with asyncio.timeout(5):
-        while not predicate():
-            await asyncio.sleep(0.01)
-
-
-def assert_finished(root):
-    assert (root / "finished").exists()
-    pid = int((root / "pid").read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
-
-
-@pytest.mark.parametrize("exit_input", ["exit", KeyboardInterrupt(), EOFError()])
-def test_exit_ctrl_c_and_eof_wait_for_owned_worker(tmp_path, exit_input):
-    screen, output = display()
-    asyncio.run(
-        run.run_session(
-            str(tmp_path), settings(tmp_path), Session(exit_input), screen,
-            worker_target=synthetic_worker,
-        )
-    )
-    assert_finished(tmp_path)
-    assert "等待当前阶段结束" in output.getvalue()
-    assert "console 和 worker 已退出" in output.getvalue()
-    assert output.getvalue().count("正在退出") == 1
-
-
-@pytest.mark.parametrize("existing", [False, True])
-def test_startup_log_boundary_no_missing_or_duplicate_events(tmp_path, existing):
-    if existing:
-        append_event(tmp_path, "parse_started")
-    screen, output = display()
-    asyncio.run(
-        run.run_session(
-            str(tmp_path), settings(tmp_path), Session("exit"), screen,
-            worker_target=synthetic_worker,
-        )
-    )
-    for event in ("worker_starting", "worker_started", "worker_stopped"):
-        assert output.getvalue().count(console.EVENT_LABELS[event]) == 1
-    assert console.EVENT_LABELS["parse_started"] not in output.getvalue()
-
-
-def test_error_log_level_does_not_gate_ready(tmp_path):
-    screen, output = display()
-    session = Session("exit")
-    asyncio.run(
-        run.run_session(
-            str(tmp_path), settings(tmp_path, "ERROR"), session, screen,
-            worker_target=synthetic_worker,
-        )
-    )
-    assert session.prompts == 1
-    assert "worker 已就绪" in output.getvalue()
-    assert console.EVENT_LABELS["worker_starting"] not in output.getvalue()
-    assert_finished(tmp_path)
-
-
-@pytest.mark.parametrize("target", [error_worker, early_exit_worker, ready_exit_worker])
-def test_worker_failure_and_unexpected_zero_exit_fail_owner(tmp_path, target):
-    screen, output = display()
-    with pytest.raises(ImporterError) as error:
-        asyncio.run(
-            run.run_session(str(tmp_path), settings(tmp_path), Session(), screen, worker_target=target)
-        )
-    assert "worker" in str(error.value)
-    assert "SECRET" not in str(error.value) + output.getvalue()
-    assert "console 和 worker 已退出" not in output.getvalue()
-    assert "运行已中断" in output.getvalue()
+from ezbookkeeping_importer.entrypoints import cli, run
 
 
 @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
-def test_repeated_signal_during_startup_waits_without_ready(tmp_path, sig):
-    async def scenario():
-        screen, output = display()
-        session = Session()
-        task = asyncio.create_task(
-            run.run_session(
-                str(tmp_path), settings(tmp_path), session, screen,
-                worker_target=startup_wait_worker,
-            )
-        )
-        await until(lambda: (tmp_path / "pid").exists())
-        os.kill(os.getpid(), sig)
-        os.kill(os.getpid(), sig)
-        await task
-        assert session.prompts == 0
-        assert "worker 已就绪" not in output.getvalue()
-        assert output.getvalue().count("正在退出") == 1
-        assert_finished(tmp_path)
+@pytest.mark.parametrize("boundary", ["settings", "runtime", "worker"])
+def test_stop_during_startup_and_processing_restores_handlers(monkeypatch, sig, boundary):
     previous = signal.getsignal(sig)
-    asyncio.run(scenario())
+    runtime = Mock()
+
+    def settings(*args, **kwargs):
+        assert signal.getsignal(sig) != previous
+        if boundary == "settings":
+            os.kill(os.getpid(), sig)
+        return object()
+
+    def create(*args, **kwargs):
+        if boundary == "runtime":
+            os.kill(os.getpid(), sig)
+        return runtime
+
+    def process(actual, *, stop_event):
+        assert actual is runtime
+        if boundary == "worker":
+            os.kill(os.getpid(), sig)
+            os.kill(os.getpid(), sig)
+        assert stop_event.is_set()
+
+    monkeypatch.setattr(run, "load_settings", settings)
+    constructor = Mock(side_effect=create)
+    monkeypatch.setattr(run, "Runtime", constructor)
+    process_mock = Mock(side_effect=process)
+    monkeypatch.setattr(run.worker, "run", process_mock)
+    assert run.run_service("config.toml") == 0
     assert signal.getsignal(sig) is previous
+    if boundary == "settings":
+        constructor.assert_not_called()
+        process_mock.assert_not_called()
+    else:
+        runtime.close.assert_called_once()
 
 
-def test_parent_console_failure_reaps_worker(tmp_path, monkeypatch):
-    async def broken(*args, **kwargs):
-        raise RuntimeError("synthetic console failure")
-
-    monkeypatch.setattr(console, "interact", broken)
-    screen, _ = display()
-    with pytest.raises(RuntimeError, match="synthetic console failure"):
-        asyncio.run(
-            run.run_session(
-                str(tmp_path), settings(tmp_path), Session(), screen,
-                worker_target=synthetic_worker,
-            )
-        )
-    assert_finished(tmp_path)
+def test_runtime_failure_closes_resources_without_masking_error(monkeypatch):
+    runtime = Mock()
+    monkeypatch.setattr(run, "load_settings", Mock())
+    monkeypatch.setattr(run, "Runtime", Mock(return_value=runtime))
+    monkeypatch.setattr(run.worker, "run", Mock(side_effect=RuntimeError("failure")))
+    with pytest.raises(RuntimeError, match="failure"):
+        run.run_service("config.toml")
+    runtime.close.assert_called_once()
 
 
-def test_stop_request_precedes_wait_for_accepted_command(tmp_path, monkeypatch):
-    async def scenario():
-        screen, output = display()
-        release = threading.Event()
-        started = threading.Event()
-        original = console.interact
-
-        def execute(args):
-            started.set()
-            assert release.wait(5)
-            return {
-                "email_sync_checkpoint": [], "email_source_item": [], "email": [],
-                "bank_transactions": [], "background_task": [], "issues": 0,
-                "issue_object_count": 0, "issue_groups": [],
-            }
-
-        async def interact(*args, **kwargs):
-            await original(*args, **kwargs, execute=execute)
-
-        monkeypatch.setattr(console, "interact", interact)
-        session = Session("status")
-        task = asyncio.create_task(
-            run.run_session(
-                str(tmp_path), settings(tmp_path), session, screen,
-                worker_target=synthetic_worker,
-            )
-        )
-        try:
-            await until(started.is_set)
-            os.kill(os.getpid(), signal.SIGINT)
-            await until(lambda: (tmp_path / "finished").exists())
-            assert not task.done()
-            assert "等待已接受" in output.getvalue()
-            release.set()
-            await task
-            assert "当前没有问题诊断" in output.getvalue()
-            assert_finished(tmp_path)
-        finally:
-            release.set()
-            await task
-    asyncio.run(scenario())
+def test_run_never_reads_stdin_or_requires_a_terminal(monkeypatch):
+    import sys
+    stdin = Mock()
+    stdin.read.side_effect = AssertionError("read stdin")
+    stdin.isatty.side_effect = AssertionError("checked TTY")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(run, "load_settings", Mock())
+    monkeypatch.setattr(run, "Runtime", Mock())
+    monkeypatch.setattr(run.worker, "run", Mock())
+    assert run.run_service("config.toml") == 0
+    stdin.read.assert_not_called()
+    stdin.isatty.assert_not_called()
 
 
 def test_launcher_uses_own_root_and_preserves_argument_boundaries(tmp_path):
@@ -266,100 +96,19 @@ def test_launcher_uses_own_root_and_preserves_argument_boundaries(tmp_path):
     assert explicit.stdout.splitlines()[5:] == args
 
 
-@pytest.mark.parametrize("command", ["console", "quit"])
-def test_removed_cli_commands_are_rejected(command):
+@pytest.mark.parametrize("arguments", [["worker"], ["worker", "--once"], ["run", "--once"]])
+def test_removed_worker_entrypoints_fail_before_resources(arguments, monkeypatch):
+    monkeypatch.setattr(cli.sys, "argv", ["ebki", *arguments])
+    monkeypatch.setattr(cli, "Runtime", lambda *a, **k: pytest.fail("created runtime"))
+    monkeypatch.setattr(cli, "load_settings", lambda *a, **k: pytest.fail("loaded config"))
+    monkeypatch.setattr(run, "run_service", lambda *a: pytest.fail("started owner"))
     with pytest.raises(SystemExit) as error:
-        cli.parse_command(cli.build_parser(), [command])
+        cli.main()
     assert error.value.code == 2
-    with pytest.raises(console.CommandInputError):
-        console.parse_line(command, "config.toml")
 
 
-def test_log_reader_failure_reaps_already_started_worker(tmp_path, monkeypatch):
-    original = run.LogTailer.poll
-
-    def broken(tailer):
-        if (tmp_path / "pid").exists():
-            raise ImporterError("synthetic log read failure")
-        return original(tailer)
-
-    monkeypatch.setattr(run.LogTailer, "poll", broken)
-    screen, _ = display()
-    with pytest.raises(ImporterError):
-        asyncio.run(
-            run.run_session(
-                str(tmp_path), settings(tmp_path), Session(), screen,
-                worker_target=synthetic_worker,
-            )
-        )
-    assert_finished(tmp_path)
-
-
-def test_simultaneous_parent_child_sigint_is_graceful(tmp_path):
-    async def scenario():
-        screen, output = display()
-        task = asyncio.create_task(
-            run.run_session(
-                str(tmp_path), settings(tmp_path), Session(), screen,
-                worker_target=synthetic_worker,
-            )
-        )
-        await until(lambda: (tmp_path / "pid").exists())
-        os.kill(os.getpid(), signal.SIGINT)
-        os.kill(int((tmp_path / "pid").read_text()), signal.SIGINT)
-        await task
-        assert_finished(tmp_path)
-        assert "意外退出" not in output.getvalue()
-        assert output.getvalue().count("正在退出") == 1
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
-@pytest.mark.parametrize("boundary", ["before_block", "while_blocked"])
-def test_stop_received_before_spawn_does_not_start_worker(tmp_path, monkeypatch, sig, boundary):
-    screen, output = display()
-    original_print = screen.print
-    original_mask = signal.pthread_sigmask
-
-    def stop_on_starting(*args, **kwargs):
-        original_print(*args, **kwargs)
-        if boundary == "before_block" and args == ("正在启动 worker…",):
-            os.kill(os.getpid(), sig)
-
-    def stop_while_blocked(how, mask):
-        previous = original_mask(how, mask)
-        if boundary == "while_blocked" and how == signal.SIG_BLOCK:
-            os.kill(os.getpid(), sig)
-        return previous
-
-    monkeypatch.setattr(screen, "print", stop_on_starting)
-    monkeypatch.setattr(signal, "pthread_sigmask", stop_while_blocked)
-    asyncio.run(
-        run.run_session(
-            str(tmp_path), settings(tmp_path), Session(), screen,
-            worker_target=synthetic_worker,
-        )
-    )
-
-    assert not (tmp_path / "pid").exists()
-    assert not (tmp_path / "worker.jsonl").exists()
-    assert "worker 已就绪" not in output.getvalue()
-    assert "console 和 worker 已退出" in output.getvalue()
-
-
-def test_spawn_failure_is_reported_and_restores_signal_state(tmp_path, monkeypatch):
-    screen, _ = display()
-    previous_handler = signal.getsignal(signal.SIGINT)
-    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
-
-    def fail_start(process):
-        raise OSError("synthetic spawn failure")
-
-    monkeypatch.setattr(run.multiprocessing.get_context("spawn").Process, "start", fail_start)
-    with pytest.raises(OSError, match="synthetic spawn failure"):
-        asyncio.run(
-            run.run_session(str(tmp_path), settings(tmp_path), Session(), screen)
-        )
-
-    assert signal.getsignal(signal.SIGINT) is previous_handler
-    assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == previous_mask
+def test_cli_help_has_only_one_running_entrypoint():
+    help_text = cli.build_parser().format_help()
+    assert "run" in help_text
+    assert "worker" not in help_text
+    assert "--once" not in help_text

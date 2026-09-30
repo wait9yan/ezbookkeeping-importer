@@ -7,6 +7,7 @@ import pytest
 
 import test_recheck as recheck
 from ezbookkeeping_importer.application.maintenance import issues
+from ezbookkeeping_importer.application.issue_snapshot import snapshot_issues
 from ezbookkeeping_importer.application.issue_interaction import issue_detail, issue_candidates
 from ezbookkeeping_importer.application.recheck import request_recheck
 from ezbookkeeping_importer.application.resolve import resolve
@@ -96,7 +97,7 @@ def test_interactive_resolution_rejects_changed_issue_without_replay(database, s
     )
 
 
-def test_internal_dispatch_retains_account_correction_without_public_command(
+def test_snapshot_command_retains_account_correction(
     database, settings, tmp_path
 ):
     database = database.store
@@ -114,7 +115,7 @@ def test_internal_dispatch_retains_account_correction_without_public_command(
         target_id=None,
         account_id=account,
         code=selected["code"],
-        selected=selected,
+        snapshot_document=snapshot_issues(database, "bank_transactions", selected["entity_id"]),
     )
     result = cli._execute(args, SimpleNamespace(store=database, optional_ledger=environment.ledger))
     assert result["result"] == "decision saved"

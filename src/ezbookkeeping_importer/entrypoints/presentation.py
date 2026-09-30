@@ -55,23 +55,6 @@ ISSUE_LABELS = {
     "invalid_control": "月账单控制总额异常",
     "control_mismatch": "月账单总额不一致",
 }
-COMMANDS = {
-    "status": ("查看处理状态", "只读：采集、解析、交易、任务及问题概况。", "status"),
-    "issues": (
-        "交互处理当前问题", "进入分组、对象和操作菜单；方向键选择，Esc 返回。",
-        "issues\nissues --entity-type bank_transactions\nissues --entity-id ID",
-    ),
-    "recheck": (
-        "批量复查重复候选", "处理远端数据后手动执行一次；复用已有分类，通过后可能入账。"
-        "仍重复或查询失败会再次暂停，不会定时复查。", "recheck",
-    ),
-    "sync": (
-        "安排邮件采集", "安排后台同步，可指定接收日期补扫；新邮件通过检查后可能入账。"
-        "不会复查已暂停的重复候选。",
-        "sync\nsync --since 2026-09-01 --until 2026-09-30",
-    ),
-    "exit": ("退出项目", "一起关闭 console 和 worker，等待当前阶段及已接受命令完成。", "exit"),
-}
 ACTION_LABELS = {
     "retry": "重新处理", "ignore": "忽略", "link": "关联已有账单",
     "accept-source": "接纳来源", "confirm-new": "确认新建",
@@ -100,27 +83,6 @@ def table(title, *columns) -> Table:
     for column in columns:
         result.add_column(column, overflow="fold")
     return result
-
-
-def help_text(command=None) -> str:
-    commands = COMMANDS if command is None else {command: COMMANDS[command]}
-    return "\n\n".join(
-        f"{name} · {title}\n{description}\n用法：\n{example}"
-        for name, (title, description, example) in commands.items()
-    )
-
-
-def render_help(console: Console, command=None):
-    if command is not None:
-        console.print(text(help_text(command)))
-        return
-    commands = table("控制台命令", "命令", "用途")
-    for name, (title, _, _) in COMMANDS.items():
-        commands.add_row(text(name, "cyan"), text(title))
-    console.print(commands)
-    console.print(text("help 命令名 查看示例与影响，例如 help recheck。"))
-    console.print(text("status 只读；issues 中选择处理动作、sync 和 recheck 会改变处理状态。"))
-    console.print(text("exit、Ctrl+C 或 EOF 一起退出 console 和 worker。"))
 
 
 def _counts(rows, state_key) -> str:
@@ -156,7 +118,7 @@ def _next_step(group) -> str:
     if code == "duplicate_check_failed":
         return "检查账本连接，修正查询失败后执行 recheck"
     if code == "source_acceptance":
-        return "进入 issues 核实并接纳来源"
+        return "使用 issues show 核实，issues resolve 接纳来源"
     if code == "reconciliation":
         if group.get("match_status") in ("missing_source_transaction", "missing_statement_evidence"):
             return "资料缺口，补充来源邮件后重新核对"
@@ -221,7 +183,7 @@ def _status(console, result):
                            f"{scalar(result.get('issue_object_count'))} 个业务对象；诊断不等于失败交易。"))
         if result.get("issue_groups"):
             _issue_summary(console, result["issue_groups"])
-        console.print(text("输入 issues 查看问题；历史扫描完成不代表全部交易已入账。"))
+        console.print(text("执行 issues 查看问题；历史扫描完成不代表全部交易已入账。"))
 
 
 def _fields(console, fields):
@@ -299,7 +261,7 @@ def _detail_fields(issue):
 def _issues(console, result, args):
     count = len(result)
     objects = len({(item["entity_type"], item["entity_id"]) for item in result})
-    filtered = args is not None and (args.entity_type is not None or args.entity_id is not None)
+    filtered = args is not None and any(getattr(args, key, None) for key in ("entity_type", "entity_id", "code", "status"))
     if not count:
         console.print(text("没有符合筛选条件的问题。" if filtered else "当前没有问题诊断。", "green"))
         return
@@ -327,7 +289,16 @@ def render_result(console: Console, command: str, result, args=None):
     if command == "status":
         _status(console, result)
     elif command == "issues":
-        _issues(console, result, args)
+        operation = getattr(args, "operation", None)
+        if operation == "candidates":
+            comparison(console, result)
+            _named_objects(console, result)
+        elif operation == "resolve":
+            render_result(console, "resolve", result)
+        elif operation == "show":
+            _snapshot(console, result)
+        else:
+            _issues(console, result, args)
     elif command == "sync":
         console.print(text("同步请求已排队。" if result["queued"] else "同步请求已合并到现有待处理任务。"))
         if result.get("since") is not None or result.get("until") is not None:
@@ -339,6 +310,11 @@ def render_result(console: Console, command: str, result, args=None):
                           ("已在处理", result["already_pending"]),
                           ("已跳过", result["skipped"])])
         console.print(text("已在处理的交易不会重复安排；已跳过的交易当前不满足复查条件。"))
+        if result.get("items"):
+            rows = table("逐项复查结果", "对象 ID", "结果", "原因")
+            for item in result["items"]:
+                rows.add_row(text(item.get("entity_id")), text(item.get("result")), text(item.get("reason")))
+            console.print(rows)
         if result["scheduled"]:
             console.print(text("本次安排一次复查，复查尚未完成；worker 将使用已有分类重新查重，通过后可能入账。"
                                "仍重复或查询失败会再次暂停，不会自动再次复查。"))
@@ -357,5 +333,87 @@ def render_result(console: Console, command: str, result, args=None):
         if args is not None:
             _fields(console, [("对象类型", label(ENTITY_LABELS, args.entity_type)),
                               ("完整 ID", args.entity_id)])
+    elif command in {"migrate", "doctor", "restore-audit"}:
+        _document(console, result)
     else:
         raise ValueError(f"unsupported presentation command: {command}")
+
+
+def comparison(console, data):
+    accounts = {str(a["id"]): a for a in data["accounts"]}
+    categories = {str(c["id"]): c.get("path", c.get("name", c["id"])) for c in data["categories"]}
+    table = Table(title="账单对比（远端实时读取；缺失不代表可以直接新建）")
+    for name in ("对象", "时间", "金额", "账户", "分类", "商户 / 备注"):
+        table.add_column(name, overflow="fold")
+    rows = [("本地交易", data["decision"].get("payload"))]
+    rows += [("候选 " + c["id"], c["transaction"]) for c in data["candidates"]]
+    for label, row in rows:
+        if row is None:
+            table.add_row(Text(scalar(label)), Text("远端已不存在"))
+            continue
+        when = (
+            datetime.fromtimestamp(row["time"]).astimezone().isoformat()
+            if row.get("time")
+            else "未提供"
+        )
+        amount = str(Decimal(str(row["sourceAmount"])) / 100) if "sourceAmount" in row else "未提供"
+        source = accounts.get(str(row.get("sourceAccountId")), {})
+        account = source.get("name", row.get("sourceAccountId"))
+        amount += " " + str(source.get("currency", "币种未提供"))
+        if row.get("type") == 4:
+            destination = accounts.get(str(row.get("destinationAccountId")), {})
+            account = f"{account} → {destination.get('name', row.get('destinationAccountId'))}"
+            amount += (
+                " → "
+                + str(Decimal(str(row["destinationAmount"])) / 100)
+                + " "
+                + str(destination.get("currency", "币种未提供"))
+            )
+        table.add_row(
+            *[
+                Text(scalar(v))
+                for v in (
+                    label,
+                    when,
+                    amount,
+                    account,
+                    categories.get(str(row.get("categoryId")), row.get("categoryId")),
+                    row.get("comment"),
+                )
+            ]
+        )
+    console.print(table)
+
+
+
+def _named_objects(console, result):
+    for title, key in (("可用账户", "accounts"), ("账本分类", "categories")):
+        rows = table(title, "ID", "名称", "币种")
+        for item in result[key]:
+            rows.add_row(text(item["id"]), text(item.get("path", item.get("name"))), text(item.get("currency")))
+        console.print(rows)
+
+
+def _document(console, value, prefix=""):
+    """完整展示只读详情，保持层级与定位信息，不解释其中的终端标记。"""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _document(console, item, f"{prefix}.{key}" if prefix else key)
+    elif isinstance(value, list):
+        if not value:
+            _fields(console, [(prefix, "暂无记录")])
+        for index, item in enumerate(value):
+            _document(console, item, f"{prefix}[{index}]")
+    else:
+        _fields(console, [(prefix, value)])
+
+
+def _snapshot(console, result):
+    if not result["items"]:
+        console.print(text("没有符合筛选条件的问题。"))
+    for item in result["items"]:
+        issue = item["issue"]
+        console.print(text(f"{label(ENTITY_LABELS, issue['entity_type'])} · {issue['entity_id']}", "bold"))
+        _fields(console, [("诊断代码", issue["code"]), ("决定版本", issue.get("version"))])
+        _document(console, item["view"])
+    console.print(text("处理时需保存 JSON 前置快照；本次查看不改变状态。"))

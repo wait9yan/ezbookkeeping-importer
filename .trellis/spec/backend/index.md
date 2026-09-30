@@ -6,7 +6,8 @@
 
 | 规范 | 内容 | 状态 |
 | --- | --- | --- |
-| [配置入口](configuration.md) | 环境变量、业务 TOML、命令依赖与迁移 | 已统一配置契约 |
+| [配置入口](configuration.md) | 环境变量、业务 TOML、命令依赖与严格校验 | 已统一配置契约 |
+| [单次维护命令](cli-maintenance.md) | 无交互CLI、状态快照、人工决定与范围复查 | 单进程方案已实施 |
 | [目录结构](directory-structure.md) | 模块和依赖边界 | 已按首期实现更新 |
 | [数据库](database-guidelines.md) | PostgreSQL 事务、任务领取和迁移 | 已按首期实现更新 |
 | [QQ 来源接纳](qq-source-authentication.md) | QQ 收件节点、认证服务及认证头结构 | 实际样本与拒绝路径已验证 |

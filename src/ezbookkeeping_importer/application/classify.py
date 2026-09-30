@@ -407,6 +407,7 @@ def classify_pending(
     ai: Classifier | None,
     *,
     transaction_ids: frozenset[str] | None = None,
+    should_stop=lambda: False,
 ):
     if transaction_ids == frozenset():
         return
@@ -424,6 +425,8 @@ def classify_pending(
     blocked_objects = defaultdict(list)
     emit("classification_started", stage="classification", total=len(transactions))
     for transaction in transactions:
+        if should_stop():
+            return
         try:
             outcome, fields = _classify_one(
                 store, settings, ledger, ai, transaction, search_results

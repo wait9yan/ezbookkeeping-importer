@@ -217,7 +217,7 @@ def test_reconnect_failure_does_not_fake_success(monkeypatch):
         "sync",
         "resolve",
         "restore-audit",
-        "worker",
+        "run",
         "doctor",
     ],
 )

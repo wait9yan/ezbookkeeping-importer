@@ -40,9 +40,18 @@ def cycle(runtime, logger, *, should_stop=lambda: False):
                     if job["task_type"] == "sync_range"
                     else None
                 )
-                summary = collect(store, mail, runtime.evidence, runtime.settings, since, until)
+                summary = collect(
+                    store, mail, runtime.evidence, runtime.settings, since, until,
+                    should_stop=should_stop,
+                )
             finally:
                 mail.close()
+            if summary is None:
+                store.execute(
+                    "UPDATE background_task SET status='queued',updated_at=now() WHERE id=%s",
+                    (job["id"],),
+                )
+                return None
             with store.transaction():
                 store.execute(
                     "UPDATE background_task SET status='done',error_code=NULL,last_error=NULL,updated_at=now() WHERE id=%s",
@@ -70,14 +79,18 @@ def cycle(runtime, logger, *, should_stop=lambda: False):
                 **failure_fields(exc, "sync_failed", "collection"),
             )
     stages = [
-        ("parse", lambda: parse_pending(store, runtime.parser)),
+        ("parse", lambda: parse_pending(store, runtime.parser, should_stop=should_stop)),
         (
             "classification",
-            lambda: classify_pending(store, runtime.settings, runtime.ledger, runtime.ai),
+            lambda: classify_pending(
+                store, runtime.settings, runtime.ledger, runtime.ai, should_stop=should_stop
+            ),
         ),
-        ("write", lambda: write_queued(store, runtime.ledger)),
-        ("reconciliation", lambda: reconcile(store, runtime.ledger, runtime.settings.report_dir)),
-        ("write", lambda: write_queued(store, runtime.ledger)),
+        ("write", lambda: write_queued(store, runtime.ledger, should_stop=should_stop)),
+        ("reconciliation", lambda: reconcile(
+            store, runtime.ledger, runtime.settings.report_dir, should_stop=should_stop
+        )),
+        ("write", lambda: write_queued(store, runtime.ledger, should_stop=should_stop)),
     ]
     for stage, operation in stages:
         if should_stop():

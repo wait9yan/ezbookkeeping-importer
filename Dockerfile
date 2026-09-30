@@ -32,4 +32,4 @@ RUN mkdir -p /app/data/email /app/data/reports /app/data/logs \
     && chown -R 10001:10001 /app/data
 USER 10001:10001
 ENTRYPOINT ["ebki"]
-CMD ["worker"]
+CMD ["run"]
