@@ -5,7 +5,7 @@
       "version": 1,
       "name": "001_initial.sql",
       "script_sha256": "5b31feddebafe5a64bb2f997256a0b7480d218217088919ca0fc08ceacc19d2b",
-      "signature_sha256": "efbadd8e36577d441283b858f46cb251671d72bb7956178781e5ebd495318697",
+      "signature_sha256": "cd51fa4fd73f31c4925ce07a0fa12286edd2882fe2289c4306e53df017d7113d",
       "signature": {
         "relations": [
           {
@@ -1249,17 +1249,17 @@
           {
             "relname": "background_task",
             "contype": "c",
+            "definition": "CHECK ((((task_type = ANY (ARRAY['sync'::text, 'sync_range'::text])) AND (bank_transaction_id IS NULL) AND (decision_version IS NULL) AND (status <> ALL (ARRAY['unknown'::text, 'rejected'::text]))) OR ((task_type = ANY (ARRAY['create'::text, 'settle_amount'::text, 'settle_currency'::text])) AND (bank_transaction_id IS NOT NULL) AND (decision_version IS NOT NULL) AND (decision_version > 0))))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "c",
             "definition": "CHECK ((completion_method = ANY (ARRAY['write_verified'::text, 'existing_link'::text, 'already_applied'::text])))"
           },
           {
             "relname": "background_task",
             "contype": "c",
             "definition": "CHECK ((status = ANY (ARRAY['queued'::text, 'dispatching'::text, 'unknown'::text, 'done'::text, 'rejected'::text, 'cancelled'::text])))"
-          },
-          {
-            "relname": "background_task",
-            "contype": "c",
-            "definition": "CHECK ((((task_type = ANY (ARRAY['sync'::text, 'sync_range'::text])) AND (bank_transaction_id IS NULL) AND (decision_version IS NULL) AND (status <> ALL (ARRAY['unknown'::text, 'rejected'::text]))) OR ((task_type = ANY (ARRAY['create'::text, 'settle_amount'::text, 'settle_currency'::text])) AND (bank_transaction_id IS NOT NULL) AND (decision_version IS NOT NULL) AND (decision_version > 0))))"
           },
           {
             "relname": "background_task",
@@ -1284,22 +1284,22 @@
           {
             "relname": "bank_report",
             "contype": "c",
-            "definition": "CHECK ((reconciliation_version >= 0))"
-          },
-          {
-            "relname": "bank_report",
-            "contype": "c",
             "definition": "CHECK (((report_key <> ''::text) AND (POSITION((':'::text) IN (report_key)) = 0)))"
           },
           {
             "relname": "bank_report",
             "contype": "c",
-            "definition": "CHECK ((report_type = ANY (ARRAY['daily'::text, 'repayment'::text, 'monthly'::text])))"
+            "definition": "CHECK (((report_type = 'monthly'::text) OR ((reconciliation_last_attempt_at IS NULL) AND (reconciled_at IS NULL) AND (reconciliation_next_check_at IS NULL) AND (reconciliation_input_fingerprint IS NULL) AND (reconciliation_queries_succeeded IS NULL) AND (reconciliation_last_error IS NULL) AND (reconciliation_version = 0))))"
           },
           {
             "relname": "bank_report",
             "contype": "c",
-            "definition": "CHECK (((report_type = 'monthly'::text) OR ((reconciliation_last_attempt_at IS NULL) AND (reconciled_at IS NULL) AND (reconciliation_next_check_at IS NULL) AND (reconciliation_input_fingerprint IS NULL) AND (reconciliation_queries_succeeded IS NULL) AND (reconciliation_last_error IS NULL) AND (reconciliation_version = 0))))"
+            "definition": "CHECK ((reconciliation_version >= 0))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK ((report_type = ANY (ARRAY['daily'::text, 'repayment'::text, 'monthly'::text])))"
           },
           {
             "relname": "bank_report",
@@ -1319,11 +1319,6 @@
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
-            "definition": "CHECK ((check_direction = ANY (ARRAY['statement_to_transaction'::text, 'transaction_to_statement'::text])))"
-          },
-          {
-            "relname": "bank_statement_reconciliation",
-            "contype": "c",
             "definition": "CHECK ((((check_direction = 'statement_to_transaction'::text) AND (statement_row_key IS NOT NULL) AND (match_status = ANY (ARRAY['matched'::text, 'missing_source_transaction'::text, 'ambiguous'::text, 'out_of_scope'::text]))) OR ((check_direction = 'transaction_to_statement'::text) AND (bank_transaction_id IS NOT NULL) AND (match_status = ANY (ARRAY['matched'::text, 'missing_statement_evidence'::text, 'ambiguous'::text, 'awaiting_statement'::text])))))"
           },
           {
@@ -1334,12 +1329,12 @@
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
-            "definition": "CHECK (((ledger_check_status <> ALL (ARRAY['query_failed'::text, 'not_checked'::text, 'target_missing'::text])) OR ((actual_amount IS NULL) AND (actual_currency IS NULL) AND (ledger_observed_at IS NULL))))"
+            "definition": "CHECK (((ledger_check_status <> 'query_failed'::text) OR (last_error IS NOT NULL)))"
           },
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
-            "definition": "CHECK ((ledger_check_status = ANY (ARRAY['not_checked'::text, 'matched'::text, 'mismatched'::text, 'target_missing'::text, 'query_failed'::text, 'not_comparable'::text])))"
+            "definition": "CHECK (((ledger_check_status <> ALL (ARRAY['query_failed'::text, 'not_checked'::text, 'target_missing'::text])) OR ((actual_amount IS NULL) AND (actual_currency IS NULL) AND (ledger_observed_at IS NULL))))"
           },
           {
             "relname": "bank_statement_reconciliation",
@@ -1349,17 +1344,22 @@
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
-            "definition": "CHECK (((ledger_check_status <> 'query_failed'::text) OR (last_error IS NOT NULL)))"
+            "definition": "CHECK (((match_status <> 'matched'::text) OR ((statement_row_key IS NOT NULL) AND (bank_transaction_id IS NOT NULL))))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((check_direction = ANY (ARRAY['statement_to_transaction'::text, 'transaction_to_statement'::text])))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((ledger_check_status = ANY (ARRAY['not_checked'::text, 'matched'::text, 'mismatched'::text, 'target_missing'::text, 'query_failed'::text, 'not_comparable'::text])))"
           },
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
             "definition": "CHECK ((match_status = ANY (ARRAY['matched'::text, 'missing_source_transaction'::text, 'missing_statement_evidence'::text, 'ambiguous'::text, 'out_of_scope'::text, 'awaiting_statement'::text])))"
-          },
-          {
-            "relname": "bank_statement_reconciliation",
-            "contype": "c",
-            "definition": "CHECK (((match_status <> 'matched'::text) OR ((statement_row_key IS NOT NULL) AND (bank_transaction_id IS NOT NULL))))"
           },
           {
             "relname": "bank_statement_reconciliation",
@@ -1375,6 +1375,11 @@
             "relname": "bank_statement_reconciliation",
             "contype": "p",
             "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK (((report_row_key <> ''::text) AND (POSITION((':'::text) IN (report_row_key)) = 0)))"
           },
           {
             "relname": "bank_transactions",
@@ -1395,11 +1400,6 @@
             "relname": "bank_transactions",
             "contype": "c",
             "definition": "CHECK ((import_status = ANY (ARRAY['pending'::text, 'queued'::text, 'dispatching'::text, 'unknown'::text, 'booked'::text, 'issue'::text, 'ignored'::text])))"
-          },
-          {
-            "relname": "bank_transactions",
-            "contype": "c",
-            "definition": "CHECK (((report_row_key <> ''::text) AND (POSITION((':'::text) IN (report_row_key)) = 0)))"
           },
           {
             "relname": "bank_transactions",
@@ -1464,16 +1464,6 @@
           {
             "relname": "email_source_item",
             "contype": "c",
-            "definition": "CHECK ((source_status = ANY (ARRAY['verified'::text, 'requires_acceptance'::text])))"
-          },
-          {
-            "relname": "email_source_item",
-            "contype": "c",
-            "definition": "CHECK ((status = ANY (ARRAY['pending'::text, 'skipped'::text, 'collected'::text, 'failed'::text])))"
-          },
-          {
-            "relname": "email_source_item",
-            "contype": "c",
             "definition": "CHECK ((((status = 'collected'::text) AND (email_id IS NOT NULL) AND (source_status IS NOT NULL) AND (source_reason IS NOT NULL) AND (collected_at IS NOT NULL)) OR ((status <> 'collected'::text) AND (email_id IS NULL) AND (source_status IS NULL) AND (source_reason IS NULL) AND (collected_at IS NULL))))"
           },
           {
@@ -1485,6 +1475,16 @@
             "relname": "email_source_item",
             "contype": "c",
             "definition": "CHECK (((status = 'skipped'::text) = (skip_reason IS NOT NULL)))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((source_status = ANY (ARRAY['verified'::text, 'requires_acceptance'::text])))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((status = ANY (ARRAY['pending'::text, 'skipped'::text, 'collected'::text, 'failed'::text])))"
           },
           {
             "relname": "email_source_item",
@@ -1655,7 +1655,7 @@
       "version": 2,
       "name": "002_migration_history.sql",
       "script_sha256": "d7a741a9d7c460eb4a35aaace02a14ac54bb279d7ecb23963db7107130b1197b",
-      "signature_sha256": "502cf87b07607e5347cadcb9ab7c709354266c346a099e30aa8f1a394e039cdc",
+      "signature_sha256": "6b861623ed80d8581ee339fce13c479e8288920148619d91f0ed91a406b0a692",
       "signature": {
         "relations": [
           {
@@ -2909,17 +2909,17 @@
           {
             "relname": "background_task",
             "contype": "c",
+            "definition": "CHECK ((((task_type = ANY (ARRAY['sync'::text, 'sync_range'::text])) AND (bank_transaction_id IS NULL) AND (decision_version IS NULL) AND (status <> ALL (ARRAY['unknown'::text, 'rejected'::text]))) OR ((task_type = ANY (ARRAY['create'::text, 'settle_amount'::text, 'settle_currency'::text])) AND (bank_transaction_id IS NOT NULL) AND (decision_version IS NOT NULL) AND (decision_version > 0))))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "c",
             "definition": "CHECK ((completion_method = ANY (ARRAY['write_verified'::text, 'existing_link'::text, 'already_applied'::text])))"
           },
           {
             "relname": "background_task",
             "contype": "c",
             "definition": "CHECK ((status = ANY (ARRAY['queued'::text, 'dispatching'::text, 'unknown'::text, 'done'::text, 'rejected'::text, 'cancelled'::text])))"
-          },
-          {
-            "relname": "background_task",
-            "contype": "c",
-            "definition": "CHECK ((((task_type = ANY (ARRAY['sync'::text, 'sync_range'::text])) AND (bank_transaction_id IS NULL) AND (decision_version IS NULL) AND (status <> ALL (ARRAY['unknown'::text, 'rejected'::text]))) OR ((task_type = ANY (ARRAY['create'::text, 'settle_amount'::text, 'settle_currency'::text])) AND (bank_transaction_id IS NOT NULL) AND (decision_version IS NOT NULL) AND (decision_version > 0))))"
           },
           {
             "relname": "background_task",
@@ -2944,22 +2944,22 @@
           {
             "relname": "bank_report",
             "contype": "c",
-            "definition": "CHECK ((reconciliation_version >= 0))"
-          },
-          {
-            "relname": "bank_report",
-            "contype": "c",
             "definition": "CHECK (((report_key <> ''::text) AND (POSITION((':'::text) IN (report_key)) = 0)))"
           },
           {
             "relname": "bank_report",
             "contype": "c",
-            "definition": "CHECK ((report_type = ANY (ARRAY['daily'::text, 'repayment'::text, 'monthly'::text])))"
+            "definition": "CHECK (((report_type = 'monthly'::text) OR ((reconciliation_last_attempt_at IS NULL) AND (reconciled_at IS NULL) AND (reconciliation_next_check_at IS NULL) AND (reconciliation_input_fingerprint IS NULL) AND (reconciliation_queries_succeeded IS NULL) AND (reconciliation_last_error IS NULL) AND (reconciliation_version = 0))))"
           },
           {
             "relname": "bank_report",
             "contype": "c",
-            "definition": "CHECK (((report_type = 'monthly'::text) OR ((reconciliation_last_attempt_at IS NULL) AND (reconciled_at IS NULL) AND (reconciliation_next_check_at IS NULL) AND (reconciliation_input_fingerprint IS NULL) AND (reconciliation_queries_succeeded IS NULL) AND (reconciliation_last_error IS NULL) AND (reconciliation_version = 0))))"
+            "definition": "CHECK ((reconciliation_version >= 0))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK ((report_type = ANY (ARRAY['daily'::text, 'repayment'::text, 'monthly'::text])))"
           },
           {
             "relname": "bank_report",
@@ -2979,11 +2979,6 @@
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
-            "definition": "CHECK ((check_direction = ANY (ARRAY['statement_to_transaction'::text, 'transaction_to_statement'::text])))"
-          },
-          {
-            "relname": "bank_statement_reconciliation",
-            "contype": "c",
             "definition": "CHECK ((((check_direction = 'statement_to_transaction'::text) AND (statement_row_key IS NOT NULL) AND (match_status = ANY (ARRAY['matched'::text, 'missing_source_transaction'::text, 'ambiguous'::text, 'out_of_scope'::text]))) OR ((check_direction = 'transaction_to_statement'::text) AND (bank_transaction_id IS NOT NULL) AND (match_status = ANY (ARRAY['matched'::text, 'missing_statement_evidence'::text, 'ambiguous'::text, 'awaiting_statement'::text])))))"
           },
           {
@@ -2994,12 +2989,12 @@
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
-            "definition": "CHECK (((ledger_check_status <> ALL (ARRAY['query_failed'::text, 'not_checked'::text, 'target_missing'::text])) OR ((actual_amount IS NULL) AND (actual_currency IS NULL) AND (ledger_observed_at IS NULL))))"
+            "definition": "CHECK (((ledger_check_status <> 'query_failed'::text) OR (last_error IS NOT NULL)))"
           },
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
-            "definition": "CHECK ((ledger_check_status = ANY (ARRAY['not_checked'::text, 'matched'::text, 'mismatched'::text, 'target_missing'::text, 'query_failed'::text, 'not_comparable'::text])))"
+            "definition": "CHECK (((ledger_check_status <> ALL (ARRAY['query_failed'::text, 'not_checked'::text, 'target_missing'::text])) OR ((actual_amount IS NULL) AND (actual_currency IS NULL) AND (ledger_observed_at IS NULL))))"
           },
           {
             "relname": "bank_statement_reconciliation",
@@ -3009,17 +3004,22 @@
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
-            "definition": "CHECK (((ledger_check_status <> 'query_failed'::text) OR (last_error IS NOT NULL)))"
+            "definition": "CHECK (((match_status <> 'matched'::text) OR ((statement_row_key IS NOT NULL) AND (bank_transaction_id IS NOT NULL))))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((check_direction = ANY (ARRAY['statement_to_transaction'::text, 'transaction_to_statement'::text])))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((ledger_check_status = ANY (ARRAY['not_checked'::text, 'matched'::text, 'mismatched'::text, 'target_missing'::text, 'query_failed'::text, 'not_comparable'::text])))"
           },
           {
             "relname": "bank_statement_reconciliation",
             "contype": "c",
             "definition": "CHECK ((match_status = ANY (ARRAY['matched'::text, 'missing_source_transaction'::text, 'missing_statement_evidence'::text, 'ambiguous'::text, 'out_of_scope'::text, 'awaiting_statement'::text])))"
-          },
-          {
-            "relname": "bank_statement_reconciliation",
-            "contype": "c",
-            "definition": "CHECK (((match_status <> 'matched'::text) OR ((statement_row_key IS NOT NULL) AND (bank_transaction_id IS NOT NULL))))"
           },
           {
             "relname": "bank_statement_reconciliation",
@@ -3035,6 +3035,11 @@
             "relname": "bank_statement_reconciliation",
             "contype": "p",
             "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK (((report_row_key <> ''::text) AND (POSITION((':'::text) IN (report_row_key)) = 0)))"
           },
           {
             "relname": "bank_transactions",
@@ -3055,11 +3060,6 @@
             "relname": "bank_transactions",
             "contype": "c",
             "definition": "CHECK ((import_status = ANY (ARRAY['pending'::text, 'queued'::text, 'dispatching'::text, 'unknown'::text, 'booked'::text, 'issue'::text, 'ignored'::text])))"
-          },
-          {
-            "relname": "bank_transactions",
-            "contype": "c",
-            "definition": "CHECK (((report_row_key <> ''::text) AND (POSITION((':'::text) IN (report_row_key)) = 0)))"
           },
           {
             "relname": "bank_transactions",
@@ -3124,16 +3124,6 @@
           {
             "relname": "email_source_item",
             "contype": "c",
-            "definition": "CHECK ((source_status = ANY (ARRAY['verified'::text, 'requires_acceptance'::text])))"
-          },
-          {
-            "relname": "email_source_item",
-            "contype": "c",
-            "definition": "CHECK ((status = ANY (ARRAY['pending'::text, 'skipped'::text, 'collected'::text, 'failed'::text])))"
-          },
-          {
-            "relname": "email_source_item",
-            "contype": "c",
             "definition": "CHECK ((((status = 'collected'::text) AND (email_id IS NOT NULL) AND (source_status IS NOT NULL) AND (source_reason IS NOT NULL) AND (collected_at IS NOT NULL)) OR ((status <> 'collected'::text) AND (email_id IS NULL) AND (source_status IS NULL) AND (source_reason IS NULL) AND (collected_at IS NULL))))"
           },
           {
@@ -3145,6 +3135,16 @@
             "relname": "email_source_item",
             "contype": "c",
             "definition": "CHECK (((status = 'skipped'::text) = (skip_reason IS NOT NULL)))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((source_status = ANY (ARRAY['verified'::text, 'requires_acceptance'::text])))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((status = ANY (ARRAY['pending'::text, 'skipped'::text, 'collected'::text, 'failed'::text])))"
           },
           {
             "relname": "email_source_item",

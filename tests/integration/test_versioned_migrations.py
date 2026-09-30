@@ -203,6 +203,38 @@ def test_failed_version_rolls_back_only_itself_and_restart_continues(database, m
     assert store.check_schema() == 4
 
 
+def test_first_version_signature_failure_rolls_back_tables_and_history(database, monkeypatch):
+    store = database.store
+    clear_schema(store)
+    namespace = store.one('SELECT current_schema() AS name')['name']
+    empty = schema_signature(store.connection, namespace)
+    observed_history = []
+
+    def mismatched_after_first_sql(connection, current_namespace):
+        actual = schema_signature(connection, current_namespace)
+        if any(row['relname'] == 'schema_version' for row in actual['relations']):
+            observed_history.append(connection.execute(
+                'SELECT version FROM schema_version ORDER BY version'
+            ).fetchall())
+            actual['constraints'][0]['definition'] += ' changed'
+        return actual
+
+    monkeypatch.setattr(postgres, 'schema_signature', mismatched_after_first_sql)
+    with pytest.raises(DatabaseDiagnosticError) as error:
+        store.migrate()
+    assert error.value.code == 'schema_drift'
+    assert observed_history == [[{'version': 1}]]
+    assert schema_signature(store.connection, namespace) == empty
+    assert store.one("SELECT to_regclass('schema_version') AS relation")['relation'] is None
+
+    monkeypatch.setattr(postgres, 'schema_signature', schema_signature)
+    assert store.migrate() == len(load_migrations())
+    assert [(row['version'], row['script_sha256']) for row in history(store)] == [
+        (migration.version, migration.checksum) for migration in load_migrations()
+    ]
+    assert store.check_schema() == len(load_migrations())
+
+
 @pytest.mark.parametrize('signum', [signal.SIGTERM, signal.SIGKILL])
 def test_real_process_signal_rolls_back_current_version_and_releases_lock(database, monkeypatch,
                                                                          tmp_path, signum):

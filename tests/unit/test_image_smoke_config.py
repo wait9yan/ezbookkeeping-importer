@@ -1,6 +1,7 @@
 """容器冒烟配置必须经过应用真实边界校验。"""
 import importlib.util
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,33 @@ spec = importlib.util.spec_from_file_location(
 assert spec is not None and spec.loader is not None
 verify_image = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(verify_image)
+
+
+@pytest.mark.parametrize("postgres_args,expected_image", [
+    ([], "postgres:17-bookworm"),
+    (["--postgres-image", "postgres:18-alpine"], "postgres:18-alpine"),
+])
+def test_cli_routes_postgres_image_to_database_container(monkeypatch, postgres_args, expected_image):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[:3] == ["docker", "run", "-d"]:
+            raise subprocess.CalledProcessError(1, command, stderr="synthetic launch failure")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(verify_image.subprocess, "run", run)
+    with pytest.raises(SystemExit, match="synthetic launch failure"):
+        verify_image.main(["ebki-tested:arm64", "--platform", "linux/arm64", *postgres_args])
+
+    assert commands[0] == [
+        "docker", "run", "--rm", "--platform", "linux/arm64", "--network", "none",
+        "ebki-tested:arm64", "--help",
+    ]
+    database_command = next(command for command in commands if command[:3] == ["docker", "run", "-d"])
+    assert database_command[-1] == expected_image
+    assert any(command[:3] == ["docker", "volume", "rm"] for command in commands)
+    assert any(command[:3] == ["docker", "network", "rm"] for command in commands)
 
 
 def test_initial_image_configuration_uses_real_packaged_defaults(tmp_path, monkeypatch):

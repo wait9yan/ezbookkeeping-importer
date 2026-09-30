@@ -44,11 +44,12 @@ jobs:
       fail-fast: false
       matrix:
         postgres: ['17', '18']
+        distribution: [bookworm, alpine]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       postgres:
-        image: postgres:${{ matrix.postgres }}-bookworm
+        image: postgres:${{ matrix.postgres }}-${{ matrix.distribution }}
         env:
           POSTGRES_PASSWORD: synthetic-ci-password
         ports:
@@ -105,8 +106,12 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
-      - name: Verify exact image
-        run: python scripts/verify-image.py ebki-tested:${{ matrix.arch }} --platform linux/${{ matrix.arch }}
+      - name: Verify exact image against PostgreSQL Bookworm and Alpine
+        run: |
+          set -euo pipefail
+          for postgres_image in postgres:17-bookworm postgres:18-alpine; do
+            python scripts/verify-image.py ebki-tested:${{ matrix.arch }} --platform linux/${{ matrix.arch }} --postgres-image "$postgres_image"
+          done
       - name: Export verified image
         if: startsWith(github.ref, 'refs/tags/')
         run: docker save ebki-tested:${{ matrix.arch }} -o image-${{ matrix.arch }}.tar

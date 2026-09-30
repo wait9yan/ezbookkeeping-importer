@@ -15,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from image_lifecycle import verify_first_startup, verify_lifecycle  # noqa: E402
 
 
+DEFAULT_POSTGRES_IMAGE = "postgres:17-bookworm"
+
+
 SMOKE_CONFIG = '''timezone = "Asia/Shanghai"
 classification_mode = "rules_only"
 [mail]
@@ -54,7 +57,7 @@ def docker(*args: str, timeout: int = 120) -> str:
     ).stdout.strip()
 
 
-def verify(image: str, platform: str | None) -> None:
+def verify(image: str, platform: str | None, postgres_image: str = DEFAULT_POSTGRES_IMAGE) -> None:
     name = f"ebki-smoke-{uuid.uuid4().hex[:12]}"
     network, database = f"{name}-net", f"{name}-db"
     password = secrets.token_urlsafe(24)
@@ -73,7 +76,7 @@ def verify(image: str, platform: str | None) -> None:
         docker("volume", "create", volume)
         volume_created = True
         docker("run", "-d", "--name", database, "--network", network,
-               "-e", f"POSTGRES_PASSWORD={password}", "postgres:17-bookworm")
+               "-e", f"POSTGRES_PASSWORD={password}", postgres_image)
         database_created = True
         deadline = time.monotonic() + 60
         while True:
@@ -213,7 +216,7 @@ for kind in ('email', 'reports', 'logs'):
             docker, image, platform_args, network, mounts,
             f"postgresql://postgres:{password}@{database}/ebki", f"{name}-app",
         )
-        print(f"镜像验证通过：{image} ({platform or '本机架构'})")
+        print(f"镜像验证通过：{image} ({platform or '本机架构'}，{postgres_image})")
     finally:
         # 清理失败也明确呈现，不把残留资源当作成功。
         cleanup_errors = []
@@ -234,12 +237,18 @@ for kind in ('email', 'reports', 'logs'):
             raise RuntimeError("隔离资源清理失败：" + "\n".join(cleanup_errors))
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image")
     parser.add_argument("--platform", choices=("linux/amd64", "linux/arm64"))
-    args = parser.parse_args()
+    parser.add_argument("--postgres-image", default=DEFAULT_POSTGRES_IMAGE,
+                        help="隔离 PostgreSQL 镜像（默认：%(default)s）")
+    args = parser.parse_args(argv)
     try:
-        verify(args.image, args.platform)
+        verify(args.image, args.platform, args.postgres_image)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.stderr) from error
+
+
+if __name__ == "__main__":
+    main()

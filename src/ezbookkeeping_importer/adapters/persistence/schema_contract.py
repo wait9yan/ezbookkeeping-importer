@@ -1,6 +1,7 @@
 """生成器和运行时共享的 PostgreSQL 只读结构提取器。"""
 
 from typing import Any
+from operator import itemgetter
 import re
 
 
@@ -49,4 +50,13 @@ def schema_signature(connection, namespace: str) -> dict[str, Any]:
                 value = item.get(field)
                 if isinstance(value, str):
                     item[field] = normalize_namespace(value, namespace)
-    return {'relations': relations, 'types': types, 'routines': routines, 'columns': columns, 'constraints': constraints, 'indexes': indexes}
+    # SQL ordering depends on the database collation; sort normalized values in Python.
+    # The column query retains attnum order within each table, including dropped-column gaps.
+    return {
+        'relations': sorted(relations, key=itemgetter('relname', 'relkind')),
+        'types': sorted(types, key=itemgetter('typname', 'typtype')),
+        'routines': sorted(routines, key=itemgetter('proname', 'arguments')),
+        'columns': sorted(columns, key=itemgetter('relname')),
+        'constraints': sorted(constraints, key=itemgetter('relname', 'contype', 'definition')),
+        'indexes': sorted(indexes, key=itemgetter('tablename', 'indexname', 'indexdef')),
+    }
