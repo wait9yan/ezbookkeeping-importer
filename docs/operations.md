@@ -72,7 +72,7 @@ uv sync --frozen
 
 ### 数据库初始化与版本迁移
 
-当前源码的 run 与 migrate 使用同一迁移链，启动自动数据库准备尚未发布；已发布 `0.2.1` 的 run 仍需部署者先执行 migrate。其他维护命令不建库或迁移。开发者添加结构变更见[数据库结构变更与发布](database-migrations.md)。
+`run` 与 `migrate` 使用同一迁移链，自动数据库准备自 [v0.2.2](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.2.2) 引入。其他维护命令不建库或迁移。开发者添加结构变更见[数据库结构变更与发布](database-migrations.md)。
 
 只在明确缺库时，尝试创建 `EBKI_DATABASE_URL` 显式指定的目标库；密码、DNS、网络等失败不触发创建。新库从初始版本执行完整链，受支持旧库只执行未应用版本，完成校验后才开始业务恢复与导入。应用不创建角色或授予权限。
 
