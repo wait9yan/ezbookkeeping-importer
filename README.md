@@ -128,11 +128,11 @@ classification_mode = "rules_only"
 
 ## Docker 部署
 
-**当前尚未发布首个版本。** 本地源码构建和 Linux AMD64/ARM64 镜像验证已通过；GHCR 镜像、GitHub Release 和匿名拉取仍待首发验收。当前使用本节末尾的源码构建命令；下面的预构建镜像部署步骤适用于正式发布后。
+**[v0.1.0](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.1.0) 已正式发布。** GHCR 镜像支持 Linux AMD64/ARM64，两种架构均已通过匿名拉取验证。Release 提供版本说明，无部署附件；使用仓库中对应版本的部署示例。下面可直接使用预构建镜像部署，也可使用本节末尾的源码构建命令。
 
-正式发布后的镜像地址为 `ghcr.io/wait9yan/ezbookkeeping-importer`。使用发布镜像的部署机器只需 Docker Compose，无需安装 Python、uv 或克隆源码。
+发布镜像地址为 `ghcr.io/wait9yan/ezbookkeeping-importer`。使用发布镜像的部署机器只需 Docker Compose，无需安装 Python、uv 或克隆源码。
 
-正式发布后，先阅读 [Releases](https://github.com/wait9yan/ezbookkeeping-importer/releases) 中的版本说明，再从对应版本标签的仓库复制 `compose.yaml`、`config.example.toml` 和 `.env.example` 到独立部署目录，并参考该版本的 `docs/operations.md`。首次填写配置：
+先阅读 [Releases](https://github.com/wait9yan/ezbookkeeping-importer/releases) 中的版本说明，再从对应版本标签的仓库复制 `compose.yaml`、`config.example.toml` 和 `.env.example` 到独立部署目录，并参考该版本的 `docs/operations.md`。首次填写配置：
 
 ```sh
 cp .env.example .env

@@ -104,7 +104,7 @@ uv run --env-file .env ebki status --format text
 
 ## 启动和维护
 
-**当前尚未首发。** 本地包构建与 Linux AMD64/ARM64 镜像验收已通过，远端 CI、GHCR、GitHub Release 和匿名拉取仍待实际验证。当前从源码运行 Docker 时，先准备本节的配置、外部网络与数据目录，再执行：
+**[v0.1.0](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.1.0) 已正式发布。** [发布 CI](https://github.com/wait9yan/ezbookkeeping-importer/actions/runs/36671286224) 成功，GHCR 镜像的 Linux AMD64/ARM64 两种架构均已在空 Docker 配置下匿名拉取验证。Release 只提供版本说明，无部署附件；部署示例从对应版本的仓库获取。若选择从源码运行 Docker，先准备本节的配置、外部网络与数据目录，再执行：
 
 ```sh
 docker compose -f compose.yaml -f compose.build.yaml build
@@ -113,9 +113,9 @@ docker compose -f compose.yaml -f compose.build.yaml run --rm importer doctor
 docker compose -f compose.yaml -f compose.build.yaml up -d --no-build
 ```
 
-源码部署的启动、恢复、重建及新建维护容器均继续使用 `docker compose -f compose.yaml -f compose.build.yaml` 前缀，确保选择本地镜像；查询已运行容器可直接 `docker compose exec -T importer ebki ...`。下面不带构建覆盖的 GHCR 拉取、up/run 命令适用于正式发布后。
+源码部署的启动、恢复、重建及新建维护容器均继续使用 `docker compose -f compose.yaml -f compose.build.yaml` 前缀，确保选择本地镜像；查询已运行容器可直接 `docker compose exec -T importer ebki ...`。下面不带构建覆盖的 GHCR 拉取、up/run 命令用于已发布的预构建镜像。
 
-正式发布后，生产 Compose 默认从 GHCR 拉取 `latest` 预构建镜像，支持 Linux AMD64/ARM64；可在 `.env` 中通过 `EBKI_IMAGE` 指定完整版本或 digest 引用。Dockerfile 使用 Python `3.12.13` 和 uv `0.11.21` 多阶段构建，以锁文件安装生产依赖并校验一致性，运行镜像不携带 uv。首次启动前显式初始化数据库；run 不代替初始化步骤。Compose 自动读取项目 `.env`，并通过 `environment` 注入与本地相同的变量；必需凭据由应用按命令检查，因此可以在尚未填写邮箱和模型凭据时运行迁移。
+生产 Compose 默认从 GHCR 拉取 `latest` 预构建镜像，支持 Linux AMD64/ARM64；可在 `.env` 中通过 `EBKI_IMAGE` 指定完整版本或 digest 引用。Dockerfile 使用 Python `3.12.13` 和 uv `0.11.21` 多阶段构建，以锁文件安装生产依赖并校验一致性，运行镜像不携带 uv。首次启动前显式初始化数据库；run 不代替初始化步骤。Compose 自动读取项目 `.env`，并通过 `environment` 注入与本地相同的变量；必需凭据由应用按命令检查，因此可以在尚未填写邮箱和模型凭据时运行迁移。
 
 部署时把服务地址改为已有 Docker 网络内可访问的名称，例如 `http://ezbookkeeping:8080`，不能沿用容器内的 `127.0.0.1`。Compose 使用已有外部网络 `ezbookkeeping`；实际名称不同时直接修改 `compose.yaml` 中的 `networks.ezbookkeeping.name`。
 
@@ -180,7 +180,7 @@ docker compose restart importer
 
 ### 镜像升级与回退
 
-以下流程适用于正式发布后的部署与更新，当前尚无已验收的首发发布物。首次部署从目标版本标签的仓库复制 `compose.yaml`、`config.example.toml` 和 `.env.example` 到独立目录，并参考该版本的 `docs/operations.md`；Compose 默认使用 `latest`。后续升级先阅读 GitHub Release 的版本说明，再对照对应版本的 Compose 和示例配置更新，不直接覆盖现有 `.env` 或 `data/config.toml`。有意修改过外部网络或挂载源时保留部署差异。
+以下流程用于已发布镜像的部署与更新。首次部署从目标版本标签的仓库复制 `compose.yaml`、`config.example.toml` 和 `.env.example` 到独立目录，并参考该版本的 `docs/operations.md`；Compose 默认使用 `latest`。后续升级先阅读 GitHub Release 的版本说明，再对照对应版本的 Compose 和示例配置更新，不直接覆盖现有 `.env` 或 `data/config.toml`。有意修改过外部网络或挂载源时保留部署差异。
 
 1. 阅读最新正式版本的 数据库结构说明，保留 `.env` 的 `EBKI_IMAGE` 为空并执行 `docker compose pull importer` 拉取 `latest`；需要固定目标版本时将该变量设为完整版本或 digest 引用。记录当前运行镜像的版本或 digest，供兼容性允许时回退。拉取失败时先解决问题，仍在运行的旧容器不受影响。
 2. 执行 `docker compose stop importer`，确认旧 worker 已停止，且没有并发维护写入，再配对备份 importer 数据库、原始邮件和配置。
@@ -193,13 +193,15 @@ Compose采用默认十秒停止期限。程序在邮件批次、单笔交易、�
 
 ### 镜像构建与发布
 
+[v0.1.0](https://github.com/wait9yan/ezbookkeeping-importer/releases/tag/v0.1.0) 对应源码 revision `d84d81061829c0bbc66b840b2135f2c9a6a89ccf`；OCI version 为 `0.1.0`，两种架构的 revision 均一致。已验证多架构索引 digest 为 `sha256:365d256180fe51af261fa8fb3fa402cb007763e02edb7c1de9ac91476c1f4e45`，可用于 `EBKI_IMAGE` 的完整 digest 引用。
+
 GitHub Actions 对 PR、主分支和版本标签运行验证。正式版本标签使用 `vX.Y.Z`，必须与 `pyproject.toml` 的项目版本一致；发布后不覆盖版本，修复使用新版本。维护者先更新版本及锁文件、评审合入，再推送版本标签。
 
 正式发布流程将镜像推送到 `ghcr.io/wait9yan/ezbookkeeping-importer`，版本标签为 `X.Y.Z`，同时记录提交标签和 OCI 源码 revision，并在正式版本发布时更新 `latest`；PR 和主分支验证不会更新该标签。Compose 默认使用 `latest`，需要固定版本或回退时用 `EBKI_IMAGE` 指定版本，严格复现时使用多架构索引 digest。发布工作流使用 `GITHUB_TOKEN`，无需把个人推送凭据或生产连接信息交给 CI。
 
-GHCR 首次创建 package 默认私有，维护者需在 package 设置中将预期公开的镜像设为 Public，并验证未登录环境可以拉取；公开源码不等于镜像自动公开。部署端拉取失败应检查 package 权限和网络，不在生产机器自动回退为源码构建。
+GHCR package 已设为 Public，v0.1.0 的 AMD64/ARM64 镜像均已验证未登录拉取成功。部署端拉取失败应检查 package 权限和网络，不在生产机器自动回退为源码构建。
 
-CI 对 PR 和主分支执行验证，不发布；版本标签触发的流程在两种架构上验证实际构建镜像，确认 CLI、依赖、时区、非 root 写入、包内 SQL 以及隔离 PostgreSQL 初始化与重复校验，通过后才发布多架构镜像并创建自动生成版本说明的正式 Release，不附部署压缩包。已验证镜像通过内部 artifact 传递给发布 job，不重新构建。这些远端步骤尚未实际验收。`schema.sql` 在源码中是链接到 `migrations/001_initial.sql` 的符号链接，构建阶段不能遗漏目标；最终安装环境必须包含可读 SQL。
+CI 对 PR 和主分支执行验证，不发布；版本标签触发的流程在两种架构上验证实际构建镜像，确认 CLI、依赖、时区、非 root 写入、包内 SQL 以及隔离 PostgreSQL 初始化与重复校验，通过后才发布多架构镜像并创建自动生成版本说明的正式 Release，不附部署压缩包。已验证镜像通过内部 artifact 传递给发布 job，不重新构建。v0.1.0 的远端发布流程已成功完成。`schema.sql` 在源码中是链接到 `migrations/001_initial.sql` 的符号链接，构建阶段不能遗漏目标；最终安装环境必须包含可读 SQL。
 
 镜像发布和 GitHub Release 创建分为独立 job。以下是条件失败场景的恢复流程，当前没有实际远端发布失败的验收记录。若镜像已发布而 Release 步骤失败，先检查对应 Release 是否已经创建：
 
