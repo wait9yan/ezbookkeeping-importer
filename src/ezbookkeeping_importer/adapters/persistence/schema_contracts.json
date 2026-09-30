@@ -1,0 +1,3320 @@
+{
+  "format": 1,
+  "versions": [
+    {
+      "version": 1,
+      "name": "001_initial.sql",
+      "script_sha256": "5b31feddebafe5a64bb2f997256a0b7480d218217088919ca0fc08ceacc19d2b",
+      "signature_sha256": "efbadd8e36577d441283b858f46cb251671d72bb7956178781e5ebd495318697",
+      "signature": {
+        "relations": [
+          {
+            "relname": "background_task",
+            "relkind": "r"
+          },
+          {
+            "relname": "background_task_id_seq",
+            "relkind": "S"
+          },
+          {
+            "relname": "bank_report",
+            "relkind": "r"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "relkind": "r"
+          },
+          {
+            "relname": "bank_statement_reconciliation_id_seq",
+            "relkind": "S"
+          },
+          {
+            "relname": "bank_transactions",
+            "relkind": "r"
+          },
+          {
+            "relname": "email",
+            "relkind": "r"
+          },
+          {
+            "relname": "email_source_item",
+            "relkind": "r"
+          },
+          {
+            "relname": "email_source_item_id_seq",
+            "relkind": "S"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "relkind": "r"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "relkind": "r"
+          },
+          {
+            "relname": "ledger_write_attempt_id_seq",
+            "relkind": "S"
+          },
+          {
+            "relname": "schema_version",
+            "relkind": "r"
+          }
+        ],
+        "types": [],
+        "routines": [],
+        "columns": [
+          {
+            "relname": "background_task",
+            "attname": "id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "nextval('background_task_id_seq'::regclass)",
+            "table_comment": "后台任务",
+            "column_comment": "后台任务编号"
+          },
+          {
+            "relname": "background_task",
+            "attname": "task_type",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "后台任务类型"
+          },
+          {
+            "relname": "background_task",
+            "attname": "bank_transaction_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "所属银行来源交易标识"
+          },
+          {
+            "relname": "background_task",
+            "attname": "decision_version",
+            "type": "integer",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务授权决定版本"
+          },
+          {
+            "relname": "background_task",
+            "attname": "operation_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务操作标识"
+          },
+          {
+            "relname": "background_task",
+            "attname": "payload",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'{}'::jsonb",
+            "table_comment": "后台任务",
+            "column_comment": "任务执行内容"
+          },
+          {
+            "relname": "background_task",
+            "attname": "status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'queued'::text",
+            "table_comment": "后台任务",
+            "column_comment": "任务执行状态"
+          },
+          {
+            "relname": "background_task",
+            "attname": "ledger_transaction_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务远端交易编号"
+          },
+          {
+            "relname": "background_task",
+            "attname": "completion_method",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务完成方式"
+          },
+          {
+            "relname": "background_task",
+            "attname": "last_error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "当前任务执行错误"
+          },
+          {
+            "relname": "background_task",
+            "attname": "error_code",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务错误代码"
+          },
+          {
+            "relname": "background_task",
+            "attname": "last_resolution",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "最近人工处理记录"
+          },
+          {
+            "relname": "background_task",
+            "attname": "created_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "后台任务",
+            "column_comment": "任务创建时间"
+          },
+          {
+            "relname": "background_task",
+            "attname": "updated_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "后台任务",
+            "column_comment": "任务更新时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "report_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "银行报告标识"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "source_id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "业务邮箱来源标识"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "bank_code",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "银行代码"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "report_type",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "银行报告类型"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "report_date",
+            "type": "date",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "银行报告日期"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "period_start",
+            "type": "date",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "账期开始日期"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "period_end",
+            "type": "date",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "账期结束日期"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "content_fingerprint",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "报告业务内容指纹"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "source_email_id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "报告依据原件标识"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "parser_version",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "报告解析器版本"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "content",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "已接纳报告内容"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "accepted_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "银行报告",
+            "column_comment": "报告首次接纳时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_last_attempt_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "最近核对开始时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciled_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "最近核对结果发布时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_next_check_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "下次计划核对时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_input_fingerprint",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "最近核对输入指纹"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_queries_succeeded",
+            "type": "boolean",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "本轮账本查询成功标志"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_last_error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "最近整轮核对错误"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_version",
+            "type": "integer",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "0",
+            "table_comment": "银行报告",
+            "column_comment": "核对结果发布版本"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "nextval('bank_statement_reconciliation_id_seq'::regclass)",
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "核对结果编号"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "statement_report_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "所属月账单标识"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "check_direction",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "账单核对方向"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "statement_row_key",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "月账单行标识"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "bank_transaction_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "关联银行来源交易标识"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "match_status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "银行证据匹配状态"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "ledger_check_status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "远端账本核对状态"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "expected_amount",
+            "type": "numeric",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "期望记账金额"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "expected_currency",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "期望记账币种"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "actual_amount",
+            "type": "numeric",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "实际账本金额"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "actual_currency",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "实际账本币种"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "checked_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "本次核对时间"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "ledger_observed_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "本次账本读取时间"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "details",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'{}'::jsonb",
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "当前核对诊断详情"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "last_error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "本次账本查询错误"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行来源交易标识"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "report_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "所属银行报告标识"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "report_row_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "来源报告行标识"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "event_type",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行交易事件类型"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "occurred_date",
+            "type": "date",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行交易日期"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "occurred_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行交易发生时间"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "time_precision",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行交易时间精度"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "merchant_name",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行原文商户描述"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "card_reference",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行卡号或尾号"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "original_amount",
+            "type": "numeric",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行原币金额"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "original_currency",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行原币币种"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "posted_date",
+            "type": "date",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行入账日期"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "bank_settlement_amount",
+            "type": "numeric",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行结算金额"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "bank_settlement_currency",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行结算币种"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "source_details",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'{}'::jsonb",
+            "table_comment": "银行来源交易",
+            "column_comment": "银行来源补充信息"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "source_marker",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "s",
+            "default_expression": "('ebki-'::text || id)",
+            "table_comment": "银行来源交易",
+            "column_comment": "账本交易来源标记"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "ledger_transaction_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "已关联远端交易编号"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "decision_version",
+            "type": "integer",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "1",
+            "table_comment": "银行来源交易",
+            "column_comment": "当前导入决定版本"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "import_status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'pending'::text",
+            "table_comment": "银行来源交易",
+            "column_comment": "交易导入状态"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "import_decision",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "当前导入决定"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "settlement_adjustment",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "已确认结算调整"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "import_error",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "当前导入决定错误"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "last_resolution",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "最近人工处理记录"
+          },
+          {
+            "relname": "email",
+            "attname": "id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件原件标识"
+          },
+          {
+            "relname": "email",
+            "attname": "raw_path",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件原件路径"
+          },
+          {
+            "relname": "email",
+            "attname": "subject",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件主题"
+          },
+          {
+            "relname": "email",
+            "attname": "sender_address",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件头发件地址"
+          },
+          {
+            "relname": "email",
+            "attname": "sent_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件头发送时间"
+          },
+          {
+            "relname": "email",
+            "attname": "header_message_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件头消息标识"
+          },
+          {
+            "relname": "email",
+            "attname": "collected_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "邮件原件",
+            "column_comment": "原件首次保存时间"
+          },
+          {
+            "relname": "email",
+            "attname": "parse_status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'pending'::text",
+            "table_comment": "邮件原件",
+            "column_comment": "邮件解析状态"
+          },
+          {
+            "relname": "email",
+            "attname": "parsed_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "最近解析结束时间"
+          },
+          {
+            "relname": "email",
+            "attname": "parser_version",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件解析器版本"
+          },
+          {
+            "relname": "email",
+            "attname": "report_key",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "关联银行报告标识"
+          },
+          {
+            "relname": "email",
+            "attname": "parse_issues",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'[]'::jsonb",
+            "table_comment": "邮件原件",
+            "column_comment": "当前解析问题"
+          },
+          {
+            "relname": "email",
+            "attname": "last_resolution",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "最近人工处理记录"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "nextval('email_source_item_id_seq'::regclass)",
+            "table_comment": "邮件来源项",
+            "column_comment": "邮件来源项编号"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "source_id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "业务邮箱来源标识"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "folder",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "邮箱文件夹"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "uid_validity",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "邮件编号有效性标识"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "uid",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "邮箱邮件编号"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'pending'::text",
+            "table_comment": "邮件来源项",
+            "column_comment": "邮件采集状态"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "email_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "关联邮件原件标识"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "skip_reason",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "邮件筛除原因"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "last_error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "最近采集错误"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "discovered_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "邮件来源项",
+            "column_comment": "来源首次登记时间"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "updated_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "邮件来源项",
+            "column_comment": "来源状态更新时间"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "source_status",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源认证状态"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "source_reason",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源认证原因"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "collected_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源首次采集时间"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "accepted_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源人工接纳时间"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "acceptance_reason",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源人工接纳理由"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "source_id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "业务邮箱来源标识"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "folder",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "邮箱文件夹"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "uid_validity",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "邮件编号有效性标识"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "registered_uid",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "已登记邮件编号上界"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "initial_scan_upper_uid",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "首次历史扫描上界"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "last_scanned_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "邮件同步检查点",
+            "column_comment": "最近扫描登记时间"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "nextval('ledger_write_attempt_id_seq'::regclass)",
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本写入尝试编号"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "task_id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "所属后台任务编号"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "decision_version",
+            "type": "integer",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "写入尝试决定版本"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "request",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本写入请求"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "outcome",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "写入尝试结果"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "response",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本写入响应"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "写入尝试错误"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "created_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "账本写入尝试",
+            "column_comment": "写入尝试登记时间"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "response_received_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本响应接收时间"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "verified_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本回读确认时间"
+          },
+          {
+            "relname": "schema_version",
+            "attname": "version",
+            "type": "integer",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "数据库结构版本",
+            "column_comment": "数据库结构版本号"
+          },
+          {
+            "relname": "schema_version",
+            "attname": "applied_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "数据库结构版本",
+            "column_comment": "结构版本应用时间"
+          }
+        ],
+        "constraints": [
+          {
+            "relname": "background_task",
+            "contype": "c",
+            "definition": "CHECK ((completion_method = ANY (ARRAY['write_verified'::text, 'existing_link'::text, 'already_applied'::text])))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "c",
+            "definition": "CHECK ((status = ANY (ARRAY['queued'::text, 'dispatching'::text, 'unknown'::text, 'done'::text, 'rejected'::text, 'cancelled'::text])))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "c",
+            "definition": "CHECK ((((task_type = ANY (ARRAY['sync'::text, 'sync_range'::text])) AND (bank_transaction_id IS NULL) AND (decision_version IS NULL) AND (status <> ALL (ARRAY['unknown'::text, 'rejected'::text]))) OR ((task_type = ANY (ARRAY['create'::text, 'settle_amount'::text, 'settle_currency'::text])) AND (bank_transaction_id IS NOT NULL) AND (decision_version IS NOT NULL) AND (decision_version > 0))))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "c",
+            "definition": "CHECK ((task_type = ANY (ARRAY['sync'::text, 'sync_range'::text, 'create'::text, 'settle_amount'::text, 'settle_currency'::text])))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "f",
+            "definition": "FOREIGN KEY (bank_transaction_id) REFERENCES bank_transactions(id)"
+          },
+          {
+            "relname": "background_task",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "background_task",
+            "contype": "u",
+            "definition": "UNIQUE (operation_key)"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK ((reconciliation_version >= 0))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK (((report_key <> ''::text) AND (POSITION((':'::text) IN (report_key)) = 0)))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK ((report_type = ANY (ARRAY['daily'::text, 'repayment'::text, 'monthly'::text])))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK (((report_type = 'monthly'::text) OR ((reconciliation_last_attempt_at IS NULL) AND (reconciled_at IS NULL) AND (reconciliation_next_check_at IS NULL) AND (reconciliation_input_fingerprint IS NULL) AND (reconciliation_queries_succeeded IS NULL) AND (reconciliation_last_error IS NULL) AND (reconciliation_version = 0))))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "f",
+            "definition": "FOREIGN KEY (source_email_id) REFERENCES email(id)"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "f",
+            "definition": "FOREIGN KEY (source_email_id, report_key) REFERENCES email(id, report_key) DEFERRABLE INITIALLY DEFERRED"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "p",
+            "definition": "PRIMARY KEY (report_key)"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((check_direction = ANY (ARRAY['statement_to_transaction'::text, 'transaction_to_statement'::text])))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((((check_direction = 'statement_to_transaction'::text) AND (statement_row_key IS NOT NULL) AND (match_status = ANY (ARRAY['matched'::text, 'missing_source_transaction'::text, 'ambiguous'::text, 'out_of_scope'::text]))) OR ((check_direction = 'transaction_to_statement'::text) AND (bank_transaction_id IS NOT NULL) AND (match_status = ANY (ARRAY['matched'::text, 'missing_statement_evidence'::text, 'ambiguous'::text, 'awaiting_statement'::text])))))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((check_direction <> 'statement_to_transaction'::text) OR (match_status <> ALL (ARRAY['ambiguous'::text, 'missing_source_transaction'::text])) OR (bank_transaction_id IS NULL)))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((ledger_check_status <> ALL (ARRAY['query_failed'::text, 'not_checked'::text, 'target_missing'::text])) OR ((actual_amount IS NULL) AND (actual_currency IS NULL) AND (ledger_observed_at IS NULL))))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((ledger_check_status = ANY (ARRAY['not_checked'::text, 'matched'::text, 'mismatched'::text, 'target_missing'::text, 'query_failed'::text, 'not_comparable'::text])))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((ledger_check_status = 'not_checked'::text) OR (bank_transaction_id IS NOT NULL)))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((ledger_check_status <> 'query_failed'::text) OR (last_error IS NOT NULL)))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((match_status = ANY (ARRAY['matched'::text, 'missing_source_transaction'::text, 'missing_statement_evidence'::text, 'ambiguous'::text, 'out_of_scope'::text, 'awaiting_statement'::text])))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((match_status <> 'matched'::text) OR ((statement_row_key IS NOT NULL) AND (bank_transaction_id IS NOT NULL))))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "f",
+            "definition": "FOREIGN KEY (bank_transaction_id) REFERENCES bank_transactions(id)"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "f",
+            "definition": "FOREIGN KEY (statement_report_key) REFERENCES bank_report(report_key)"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK ((decision_version > 0))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK ((event_type = ANY (ARRAY['expense'::text, 'refund'::text, 'repayment'::text])))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK ((id ~ '^[A-Za-z0-9_-]{16}$'::text))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK ((import_status = ANY (ARRAY['pending'::text, 'queued'::text, 'dispatching'::text, 'unknown'::text, 'booked'::text, 'issue'::text, 'ignored'::text])))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK (((report_row_key <> ''::text) AND (POSITION((':'::text) IN (report_row_key)) = 0)))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "f",
+            "definition": "FOREIGN KEY (report_key) REFERENCES bank_report(report_key)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "u",
+            "definition": "UNIQUE (ledger_transaction_id)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "u",
+            "definition": "UNIQUE (report_key, report_row_key)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "u",
+            "definition": "UNIQUE (source_marker)"
+          },
+          {
+            "relname": "email",
+            "contype": "c",
+            "definition": "CHECK ((id ~ '^[a-f0-9]{64}$'::text))"
+          },
+          {
+            "relname": "email",
+            "contype": "c",
+            "definition": "CHECK ((jsonb_typeof(parse_issues) = 'array'::text))"
+          },
+          {
+            "relname": "email",
+            "contype": "c",
+            "definition": "CHECK ((parse_status = ANY (ARRAY['pending'::text, 'parsed'::text, 'ignored'::text, 'failed'::text])))"
+          },
+          {
+            "relname": "email",
+            "contype": "f",
+            "definition": "FOREIGN KEY (report_key) REFERENCES bank_report(report_key)"
+          },
+          {
+            "relname": "email",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "email",
+            "contype": "u",
+            "definition": "UNIQUE (id, report_key)"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((((accepted_at IS NULL) AND (acceptance_reason IS NULL)) OR ((status = 'collected'::text) AND (accepted_at IS NOT NULL) AND (acceptance_reason IS NOT NULL) AND (length(TRIM(BOTH FROM acceptance_reason)) > 0))))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((source_status = ANY (ARRAY['verified'::text, 'requires_acceptance'::text])))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((status = ANY (ARRAY['pending'::text, 'skipped'::text, 'collected'::text, 'failed'::text])))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((((status = 'collected'::text) AND (email_id IS NOT NULL) AND (source_status IS NOT NULL) AND (source_reason IS NOT NULL) AND (collected_at IS NOT NULL)) OR ((status <> 'collected'::text) AND (email_id IS NULL) AND (source_status IS NULL) AND (source_reason IS NULL) AND (collected_at IS NULL))))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK (((status = 'failed'::text) = (last_error IS NOT NULL)))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK (((status = 'skipped'::text) = (skip_reason IS NOT NULL)))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((uid > 0))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "f",
+            "definition": "FOREIGN KEY (email_id) REFERENCES email(id)"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "u",
+            "definition": "UNIQUE (source_id, folder, uid_validity, uid)"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "contype": "c",
+            "definition": "CHECK ((initial_scan_upper_uid >= 0))"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "contype": "c",
+            "definition": "CHECK ((registered_uid >= 0))"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "contype": "p",
+            "definition": "PRIMARY KEY (source_id, folder)"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "contype": "c",
+            "definition": "CHECK ((decision_version > 0))"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "contype": "c",
+            "definition": "CHECK ((outcome = ANY (ARRAY['unknown'::text, 'rejected'::text, 'confirmed'::text])))"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "contype": "f",
+            "definition": "FOREIGN KEY (task_id) REFERENCES background_task(id)"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "schema_version",
+            "contype": "p",
+            "definition": "PRIMARY KEY (version)"
+          }
+        ],
+        "indexes": [
+          {
+            "tablename": "background_task",
+            "indexname": "active_sync",
+            "indexdef": "CREATE UNIQUE INDEX active_sync ON background_task USING btree (task_type) WHERE ((task_type = 'sync'::text) AND (status = ANY (ARRAY['queued'::text, 'dispatching'::text])))"
+          },
+          {
+            "tablename": "background_task",
+            "indexname": "active_write",
+            "indexdef": "CREATE UNIQUE INDEX active_write ON background_task USING btree (bank_transaction_id) WHERE ((task_type = ANY (ARRAY['create'::text, 'settle_amount'::text, 'settle_currency'::text])) AND (status = ANY (ARRAY['queued'::text, 'dispatching'::text, 'unknown'::text])))"
+          },
+          {
+            "tablename": "background_task",
+            "indexname": "background_task_operation_key_key",
+            "indexdef": "CREATE UNIQUE INDEX background_task_operation_key_key ON background_task USING btree (operation_key)"
+          },
+          {
+            "tablename": "background_task",
+            "indexname": "background_task_pkey",
+            "indexdef": "CREATE UNIQUE INDEX background_task_pkey ON background_task USING btree (id)"
+          },
+          {
+            "tablename": "bank_report",
+            "indexname": "bank_report_pkey",
+            "indexdef": "CREATE UNIQUE INDEX bank_report_pkey ON bank_report USING btree (report_key)"
+          },
+          {
+            "tablename": "bank_statement_reconciliation",
+            "indexname": "bank_statement_reconciliation_pkey",
+            "indexdef": "CREATE UNIQUE INDEX bank_statement_reconciliation_pkey ON bank_statement_reconciliation USING btree (id)"
+          },
+          {
+            "tablename": "bank_statement_reconciliation",
+            "indexname": "statement_object",
+            "indexdef": "CREATE UNIQUE INDEX statement_object ON bank_statement_reconciliation USING btree (statement_report_key, statement_row_key) WHERE (check_direction = 'statement_to_transaction'::text)"
+          },
+          {
+            "tablename": "bank_statement_reconciliation",
+            "indexname": "transaction_object",
+            "indexdef": "CREATE UNIQUE INDEX transaction_object ON bank_statement_reconciliation USING btree (statement_report_key, bank_transaction_id) WHERE (check_direction = 'transaction_to_statement'::text)"
+          },
+          {
+            "tablename": "bank_transactions",
+            "indexname": "bank_transactions_ledger_transaction_id_key",
+            "indexdef": "CREATE UNIQUE INDEX bank_transactions_ledger_transaction_id_key ON bank_transactions USING btree (ledger_transaction_id)"
+          },
+          {
+            "tablename": "bank_transactions",
+            "indexname": "bank_transactions_pkey",
+            "indexdef": "CREATE UNIQUE INDEX bank_transactions_pkey ON bank_transactions USING btree (id)"
+          },
+          {
+            "tablename": "bank_transactions",
+            "indexname": "bank_transactions_report_key_report_row_key_key",
+            "indexdef": "CREATE UNIQUE INDEX bank_transactions_report_key_report_row_key_key ON bank_transactions USING btree (report_key, report_row_key)"
+          },
+          {
+            "tablename": "bank_transactions",
+            "indexname": "bank_transactions_source_marker_key",
+            "indexdef": "CREATE UNIQUE INDEX bank_transactions_source_marker_key ON bank_transactions USING btree (source_marker)"
+          },
+          {
+            "tablename": "email",
+            "indexname": "email_id_report_key_key",
+            "indexdef": "CREATE UNIQUE INDEX email_id_report_key_key ON email USING btree (id, report_key)"
+          },
+          {
+            "tablename": "email",
+            "indexname": "email_pkey",
+            "indexdef": "CREATE UNIQUE INDEX email_pkey ON email USING btree (id)"
+          },
+          {
+            "tablename": "email_source_item",
+            "indexname": "email_source_item_pkey",
+            "indexdef": "CREATE UNIQUE INDEX email_source_item_pkey ON email_source_item USING btree (id)"
+          },
+          {
+            "tablename": "email_source_item",
+            "indexname": "email_source_item_source_id_folder_uid_validity_uid_key",
+            "indexdef": "CREATE UNIQUE INDEX email_source_item_source_id_folder_uid_validity_uid_key ON email_source_item USING btree (source_id, folder, uid_validity, uid)"
+          },
+          {
+            "tablename": "email_source_item",
+            "indexname": "pending_source_items",
+            "indexdef": "CREATE INDEX pending_source_items ON email_source_item USING btree (source_id, folder, uid_validity, uid) WHERE (status = ANY (ARRAY['pending'::text, 'failed'::text]))"
+          },
+          {
+            "tablename": "email_sync_checkpoint",
+            "indexname": "email_sync_checkpoint_pkey",
+            "indexdef": "CREATE UNIQUE INDEX email_sync_checkpoint_pkey ON email_sync_checkpoint USING btree (source_id, folder)"
+          },
+          {
+            "tablename": "ledger_write_attempt",
+            "indexname": "ledger_write_attempt_pkey",
+            "indexdef": "CREATE UNIQUE INDEX ledger_write_attempt_pkey ON ledger_write_attempt USING btree (id)"
+          },
+          {
+            "tablename": "schema_version",
+            "indexname": "schema_version_pkey",
+            "indexdef": "CREATE UNIQUE INDEX schema_version_pkey ON schema_version USING btree (version)"
+          }
+        ]
+      }
+    },
+    {
+      "version": 2,
+      "name": "002_migration_history.sql",
+      "script_sha256": "d7a741a9d7c460eb4a35aaace02a14ac54bb279d7ecb23963db7107130b1197b",
+      "signature_sha256": "502cf87b07607e5347cadcb9ab7c709354266c346a099e30aa8f1a394e039cdc",
+      "signature": {
+        "relations": [
+          {
+            "relname": "background_task",
+            "relkind": "r"
+          },
+          {
+            "relname": "background_task_id_seq",
+            "relkind": "S"
+          },
+          {
+            "relname": "bank_report",
+            "relkind": "r"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "relkind": "r"
+          },
+          {
+            "relname": "bank_statement_reconciliation_id_seq",
+            "relkind": "S"
+          },
+          {
+            "relname": "bank_transactions",
+            "relkind": "r"
+          },
+          {
+            "relname": "email",
+            "relkind": "r"
+          },
+          {
+            "relname": "email_source_item",
+            "relkind": "r"
+          },
+          {
+            "relname": "email_source_item_id_seq",
+            "relkind": "S"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "relkind": "r"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "relkind": "r"
+          },
+          {
+            "relname": "ledger_write_attempt_id_seq",
+            "relkind": "S"
+          },
+          {
+            "relname": "schema_version",
+            "relkind": "r"
+          }
+        ],
+        "types": [],
+        "routines": [],
+        "columns": [
+          {
+            "relname": "background_task",
+            "attname": "id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "nextval('background_task_id_seq'::regclass)",
+            "table_comment": "后台任务",
+            "column_comment": "后台任务编号"
+          },
+          {
+            "relname": "background_task",
+            "attname": "task_type",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "后台任务类型"
+          },
+          {
+            "relname": "background_task",
+            "attname": "bank_transaction_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "所属银行来源交易标识"
+          },
+          {
+            "relname": "background_task",
+            "attname": "decision_version",
+            "type": "integer",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务授权决定版本"
+          },
+          {
+            "relname": "background_task",
+            "attname": "operation_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务操作标识"
+          },
+          {
+            "relname": "background_task",
+            "attname": "payload",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'{}'::jsonb",
+            "table_comment": "后台任务",
+            "column_comment": "任务执行内容"
+          },
+          {
+            "relname": "background_task",
+            "attname": "status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'queued'::text",
+            "table_comment": "后台任务",
+            "column_comment": "任务执行状态"
+          },
+          {
+            "relname": "background_task",
+            "attname": "ledger_transaction_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务远端交易编号"
+          },
+          {
+            "relname": "background_task",
+            "attname": "completion_method",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务完成方式"
+          },
+          {
+            "relname": "background_task",
+            "attname": "last_error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "当前任务执行错误"
+          },
+          {
+            "relname": "background_task",
+            "attname": "error_code",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "任务错误代码"
+          },
+          {
+            "relname": "background_task",
+            "attname": "last_resolution",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "后台任务",
+            "column_comment": "最近人工处理记录"
+          },
+          {
+            "relname": "background_task",
+            "attname": "created_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "后台任务",
+            "column_comment": "任务创建时间"
+          },
+          {
+            "relname": "background_task",
+            "attname": "updated_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "后台任务",
+            "column_comment": "任务更新时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "report_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "银行报告标识"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "source_id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "业务邮箱来源标识"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "bank_code",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "银行代码"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "report_type",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "银行报告类型"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "report_date",
+            "type": "date",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "银行报告日期"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "period_start",
+            "type": "date",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "账期开始日期"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "period_end",
+            "type": "date",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "账期结束日期"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "content_fingerprint",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "报告业务内容指纹"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "source_email_id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "报告依据原件标识"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "parser_version",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "报告解析器版本"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "content",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "已接纳报告内容"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "accepted_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "银行报告",
+            "column_comment": "报告首次接纳时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_last_attempt_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "最近核对开始时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciled_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "最近核对结果发布时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_next_check_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "下次计划核对时间"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_input_fingerprint",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "最近核对输入指纹"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_queries_succeeded",
+            "type": "boolean",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "本轮账本查询成功标志"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_last_error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行报告",
+            "column_comment": "最近整轮核对错误"
+          },
+          {
+            "relname": "bank_report",
+            "attname": "reconciliation_version",
+            "type": "integer",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "0",
+            "table_comment": "银行报告",
+            "column_comment": "核对结果发布版本"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "nextval('bank_statement_reconciliation_id_seq'::regclass)",
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "核对结果编号"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "statement_report_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "所属月账单标识"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "check_direction",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "账单核对方向"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "statement_row_key",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "月账单行标识"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "bank_transaction_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "关联银行来源交易标识"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "match_status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "银行证据匹配状态"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "ledger_check_status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "远端账本核对状态"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "expected_amount",
+            "type": "numeric",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "期望记账金额"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "expected_currency",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "期望记账币种"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "actual_amount",
+            "type": "numeric",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "实际账本金额"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "actual_currency",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "实际账本币种"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "checked_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "本次核对时间"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "ledger_observed_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "本次账本读取时间"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "details",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'{}'::jsonb",
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "当前核对诊断详情"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "attname": "last_error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行月账单核对结果",
+            "column_comment": "本次账本查询错误"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行来源交易标识"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "report_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "所属银行报告标识"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "report_row_key",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "来源报告行标识"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "event_type",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行交易事件类型"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "occurred_date",
+            "type": "date",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行交易日期"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "occurred_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行交易发生时间"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "time_precision",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行交易时间精度"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "merchant_name",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行原文商户描述"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "card_reference",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行卡号或尾号"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "original_amount",
+            "type": "numeric",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行原币金额"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "original_currency",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行原币币种"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "posted_date",
+            "type": "date",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行入账日期"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "bank_settlement_amount",
+            "type": "numeric",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行结算金额"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "bank_settlement_currency",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "银行结算币种"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "source_details",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'{}'::jsonb",
+            "table_comment": "银行来源交易",
+            "column_comment": "银行来源补充信息"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "source_marker",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "s",
+            "default_expression": "('ebki-'::text || id)",
+            "table_comment": "银行来源交易",
+            "column_comment": "账本交易来源标记"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "ledger_transaction_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "已关联远端交易编号"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "decision_version",
+            "type": "integer",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "1",
+            "table_comment": "银行来源交易",
+            "column_comment": "当前导入决定版本"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "import_status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'pending'::text",
+            "table_comment": "银行来源交易",
+            "column_comment": "交易导入状态"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "import_decision",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "当前导入决定"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "settlement_adjustment",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "已确认结算调整"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "import_error",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "当前导入决定错误"
+          },
+          {
+            "relname": "bank_transactions",
+            "attname": "last_resolution",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "银行来源交易",
+            "column_comment": "最近人工处理记录"
+          },
+          {
+            "relname": "email",
+            "attname": "id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件原件标识"
+          },
+          {
+            "relname": "email",
+            "attname": "raw_path",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件原件路径"
+          },
+          {
+            "relname": "email",
+            "attname": "subject",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件主题"
+          },
+          {
+            "relname": "email",
+            "attname": "sender_address",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件头发件地址"
+          },
+          {
+            "relname": "email",
+            "attname": "sent_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件头发送时间"
+          },
+          {
+            "relname": "email",
+            "attname": "header_message_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件头消息标识"
+          },
+          {
+            "relname": "email",
+            "attname": "collected_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "邮件原件",
+            "column_comment": "原件首次保存时间"
+          },
+          {
+            "relname": "email",
+            "attname": "parse_status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'pending'::text",
+            "table_comment": "邮件原件",
+            "column_comment": "邮件解析状态"
+          },
+          {
+            "relname": "email",
+            "attname": "parsed_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "最近解析结束时间"
+          },
+          {
+            "relname": "email",
+            "attname": "parser_version",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "邮件解析器版本"
+          },
+          {
+            "relname": "email",
+            "attname": "report_key",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "关联银行报告标识"
+          },
+          {
+            "relname": "email",
+            "attname": "parse_issues",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'[]'::jsonb",
+            "table_comment": "邮件原件",
+            "column_comment": "当前解析问题"
+          },
+          {
+            "relname": "email",
+            "attname": "last_resolution",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件原件",
+            "column_comment": "最近人工处理记录"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "nextval('email_source_item_id_seq'::regclass)",
+            "table_comment": "邮件来源项",
+            "column_comment": "邮件来源项编号"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "source_id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "业务邮箱来源标识"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "folder",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "邮箱文件夹"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "uid_validity",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "邮件编号有效性标识"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "uid",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "邮箱邮件编号"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "status",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "'pending'::text",
+            "table_comment": "邮件来源项",
+            "column_comment": "邮件采集状态"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "email_id",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "关联邮件原件标识"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "skip_reason",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "邮件筛除原因"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "last_error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "最近采集错误"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "discovered_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "邮件来源项",
+            "column_comment": "来源首次登记时间"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "updated_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "邮件来源项",
+            "column_comment": "来源状态更新时间"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "source_status",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源认证状态"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "source_reason",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源认证原因"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "collected_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源首次采集时间"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "accepted_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源人工接纳时间"
+          },
+          {
+            "relname": "email_source_item",
+            "attname": "acceptance_reason",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件来源项",
+            "column_comment": "来源人工接纳理由"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "source_id",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "业务邮箱来源标识"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "folder",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "邮箱文件夹"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "uid_validity",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "邮件编号有效性标识"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "registered_uid",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "已登记邮件编号上界"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "initial_scan_upper_uid",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "邮件同步检查点",
+            "column_comment": "首次历史扫描上界"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "attname": "last_scanned_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "邮件同步检查点",
+            "column_comment": "最近扫描登记时间"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "nextval('ledger_write_attempt_id_seq'::regclass)",
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本写入尝试编号"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "task_id",
+            "type": "bigint",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "所属后台任务编号"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "decision_version",
+            "type": "integer",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "写入尝试决定版本"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "request",
+            "type": "jsonb",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本写入请求"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "outcome",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "写入尝试结果"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "response",
+            "type": "jsonb",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本写入响应"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "error",
+            "type": "text",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "写入尝试错误"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "created_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "账本写入尝试",
+            "column_comment": "写入尝试登记时间"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "response_received_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本响应接收时间"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "attname": "verified_at",
+            "type": "timestamp with time zone",
+            "attnotnull": false,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "账本写入尝试",
+            "column_comment": "账本回读确认时间"
+          },
+          {
+            "relname": "schema_version",
+            "attname": "version",
+            "type": "integer",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "数据库结构版本",
+            "column_comment": "数据库结构版本号"
+          },
+          {
+            "relname": "schema_version",
+            "attname": "applied_at",
+            "type": "timestamp with time zone",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": "now()",
+            "table_comment": "数据库结构版本",
+            "column_comment": "结构版本应用时间"
+          },
+          {
+            "relname": "schema_version",
+            "attname": "script_sha256",
+            "type": "text",
+            "attnotnull": true,
+            "attgenerated": "",
+            "default_expression": null,
+            "table_comment": "数据库结构版本",
+            "column_comment": "迁移脚本摘要"
+          }
+        ],
+        "constraints": [
+          {
+            "relname": "background_task",
+            "contype": "c",
+            "definition": "CHECK ((completion_method = ANY (ARRAY['write_verified'::text, 'existing_link'::text, 'already_applied'::text])))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "c",
+            "definition": "CHECK ((status = ANY (ARRAY['queued'::text, 'dispatching'::text, 'unknown'::text, 'done'::text, 'rejected'::text, 'cancelled'::text])))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "c",
+            "definition": "CHECK ((((task_type = ANY (ARRAY['sync'::text, 'sync_range'::text])) AND (bank_transaction_id IS NULL) AND (decision_version IS NULL) AND (status <> ALL (ARRAY['unknown'::text, 'rejected'::text]))) OR ((task_type = ANY (ARRAY['create'::text, 'settle_amount'::text, 'settle_currency'::text])) AND (bank_transaction_id IS NOT NULL) AND (decision_version IS NOT NULL) AND (decision_version > 0))))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "c",
+            "definition": "CHECK ((task_type = ANY (ARRAY['sync'::text, 'sync_range'::text, 'create'::text, 'settle_amount'::text, 'settle_currency'::text])))"
+          },
+          {
+            "relname": "background_task",
+            "contype": "f",
+            "definition": "FOREIGN KEY (bank_transaction_id) REFERENCES bank_transactions(id)"
+          },
+          {
+            "relname": "background_task",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "background_task",
+            "contype": "u",
+            "definition": "UNIQUE (operation_key)"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK ((reconciliation_version >= 0))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK (((report_key <> ''::text) AND (POSITION((':'::text) IN (report_key)) = 0)))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK ((report_type = ANY (ARRAY['daily'::text, 'repayment'::text, 'monthly'::text])))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "c",
+            "definition": "CHECK (((report_type = 'monthly'::text) OR ((reconciliation_last_attempt_at IS NULL) AND (reconciled_at IS NULL) AND (reconciliation_next_check_at IS NULL) AND (reconciliation_input_fingerprint IS NULL) AND (reconciliation_queries_succeeded IS NULL) AND (reconciliation_last_error IS NULL) AND (reconciliation_version = 0))))"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "f",
+            "definition": "FOREIGN KEY (source_email_id) REFERENCES email(id)"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "f",
+            "definition": "FOREIGN KEY (source_email_id, report_key) REFERENCES email(id, report_key) DEFERRABLE INITIALLY DEFERRED"
+          },
+          {
+            "relname": "bank_report",
+            "contype": "p",
+            "definition": "PRIMARY KEY (report_key)"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((check_direction = ANY (ARRAY['statement_to_transaction'::text, 'transaction_to_statement'::text])))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((((check_direction = 'statement_to_transaction'::text) AND (statement_row_key IS NOT NULL) AND (match_status = ANY (ARRAY['matched'::text, 'missing_source_transaction'::text, 'ambiguous'::text, 'out_of_scope'::text]))) OR ((check_direction = 'transaction_to_statement'::text) AND (bank_transaction_id IS NOT NULL) AND (match_status = ANY (ARRAY['matched'::text, 'missing_statement_evidence'::text, 'ambiguous'::text, 'awaiting_statement'::text])))))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((check_direction <> 'statement_to_transaction'::text) OR (match_status <> ALL (ARRAY['ambiguous'::text, 'missing_source_transaction'::text])) OR (bank_transaction_id IS NULL)))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((ledger_check_status <> ALL (ARRAY['query_failed'::text, 'not_checked'::text, 'target_missing'::text])) OR ((actual_amount IS NULL) AND (actual_currency IS NULL) AND (ledger_observed_at IS NULL))))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((ledger_check_status = ANY (ARRAY['not_checked'::text, 'matched'::text, 'mismatched'::text, 'target_missing'::text, 'query_failed'::text, 'not_comparable'::text])))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((ledger_check_status = 'not_checked'::text) OR (bank_transaction_id IS NOT NULL)))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((ledger_check_status <> 'query_failed'::text) OR (last_error IS NOT NULL)))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK ((match_status = ANY (ARRAY['matched'::text, 'missing_source_transaction'::text, 'missing_statement_evidence'::text, 'ambiguous'::text, 'out_of_scope'::text, 'awaiting_statement'::text])))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "c",
+            "definition": "CHECK (((match_status <> 'matched'::text) OR ((statement_row_key IS NOT NULL) AND (bank_transaction_id IS NOT NULL))))"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "f",
+            "definition": "FOREIGN KEY (bank_transaction_id) REFERENCES bank_transactions(id)"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "f",
+            "definition": "FOREIGN KEY (statement_report_key) REFERENCES bank_report(report_key)"
+          },
+          {
+            "relname": "bank_statement_reconciliation",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK ((decision_version > 0))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK ((event_type = ANY (ARRAY['expense'::text, 'refund'::text, 'repayment'::text])))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK ((id ~ '^[A-Za-z0-9_-]{16}$'::text))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK ((import_status = ANY (ARRAY['pending'::text, 'queued'::text, 'dispatching'::text, 'unknown'::text, 'booked'::text, 'issue'::text, 'ignored'::text])))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "c",
+            "definition": "CHECK (((report_row_key <> ''::text) AND (POSITION((':'::text) IN (report_row_key)) = 0)))"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "f",
+            "definition": "FOREIGN KEY (report_key) REFERENCES bank_report(report_key)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "u",
+            "definition": "UNIQUE (ledger_transaction_id)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "u",
+            "definition": "UNIQUE (report_key, report_row_key)"
+          },
+          {
+            "relname": "bank_transactions",
+            "contype": "u",
+            "definition": "UNIQUE (source_marker)"
+          },
+          {
+            "relname": "email",
+            "contype": "c",
+            "definition": "CHECK ((id ~ '^[a-f0-9]{64}$'::text))"
+          },
+          {
+            "relname": "email",
+            "contype": "c",
+            "definition": "CHECK ((jsonb_typeof(parse_issues) = 'array'::text))"
+          },
+          {
+            "relname": "email",
+            "contype": "c",
+            "definition": "CHECK ((parse_status = ANY (ARRAY['pending'::text, 'parsed'::text, 'ignored'::text, 'failed'::text])))"
+          },
+          {
+            "relname": "email",
+            "contype": "f",
+            "definition": "FOREIGN KEY (report_key) REFERENCES bank_report(report_key)"
+          },
+          {
+            "relname": "email",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "email",
+            "contype": "u",
+            "definition": "UNIQUE (id, report_key)"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((((accepted_at IS NULL) AND (acceptance_reason IS NULL)) OR ((status = 'collected'::text) AND (accepted_at IS NOT NULL) AND (acceptance_reason IS NOT NULL) AND (length(TRIM(BOTH FROM acceptance_reason)) > 0))))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((source_status = ANY (ARRAY['verified'::text, 'requires_acceptance'::text])))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((status = ANY (ARRAY['pending'::text, 'skipped'::text, 'collected'::text, 'failed'::text])))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((((status = 'collected'::text) AND (email_id IS NOT NULL) AND (source_status IS NOT NULL) AND (source_reason IS NOT NULL) AND (collected_at IS NOT NULL)) OR ((status <> 'collected'::text) AND (email_id IS NULL) AND (source_status IS NULL) AND (source_reason IS NULL) AND (collected_at IS NULL))))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK (((status = 'failed'::text) = (last_error IS NOT NULL)))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK (((status = 'skipped'::text) = (skip_reason IS NOT NULL)))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "c",
+            "definition": "CHECK ((uid > 0))"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "f",
+            "definition": "FOREIGN KEY (email_id) REFERENCES email(id)"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "email_source_item",
+            "contype": "u",
+            "definition": "UNIQUE (source_id, folder, uid_validity, uid)"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "contype": "c",
+            "definition": "CHECK ((initial_scan_upper_uid >= 0))"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "contype": "c",
+            "definition": "CHECK ((registered_uid >= 0))"
+          },
+          {
+            "relname": "email_sync_checkpoint",
+            "contype": "p",
+            "definition": "PRIMARY KEY (source_id, folder)"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "contype": "c",
+            "definition": "CHECK ((decision_version > 0))"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "contype": "c",
+            "definition": "CHECK ((outcome = ANY (ARRAY['unknown'::text, 'rejected'::text, 'confirmed'::text])))"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "contype": "f",
+            "definition": "FOREIGN KEY (task_id) REFERENCES background_task(id)"
+          },
+          {
+            "relname": "ledger_write_attempt",
+            "contype": "p",
+            "definition": "PRIMARY KEY (id)"
+          },
+          {
+            "relname": "schema_version",
+            "contype": "c",
+            "definition": "CHECK ((script_sha256 ~ '^[a-f0-9]{64}$'::text))"
+          },
+          {
+            "relname": "schema_version",
+            "contype": "p",
+            "definition": "PRIMARY KEY (version)"
+          }
+        ],
+        "indexes": [
+          {
+            "tablename": "background_task",
+            "indexname": "active_sync",
+            "indexdef": "CREATE UNIQUE INDEX active_sync ON background_task USING btree (task_type) WHERE ((task_type = 'sync'::text) AND (status = ANY (ARRAY['queued'::text, 'dispatching'::text])))"
+          },
+          {
+            "tablename": "background_task",
+            "indexname": "active_write",
+            "indexdef": "CREATE UNIQUE INDEX active_write ON background_task USING btree (bank_transaction_id) WHERE ((task_type = ANY (ARRAY['create'::text, 'settle_amount'::text, 'settle_currency'::text])) AND (status = ANY (ARRAY['queued'::text, 'dispatching'::text, 'unknown'::text])))"
+          },
+          {
+            "tablename": "background_task",
+            "indexname": "background_task_operation_key_key",
+            "indexdef": "CREATE UNIQUE INDEX background_task_operation_key_key ON background_task USING btree (operation_key)"
+          },
+          {
+            "tablename": "background_task",
+            "indexname": "background_task_pkey",
+            "indexdef": "CREATE UNIQUE INDEX background_task_pkey ON background_task USING btree (id)"
+          },
+          {
+            "tablename": "bank_report",
+            "indexname": "bank_report_pkey",
+            "indexdef": "CREATE UNIQUE INDEX bank_report_pkey ON bank_report USING btree (report_key)"
+          },
+          {
+            "tablename": "bank_statement_reconciliation",
+            "indexname": "bank_statement_reconciliation_pkey",
+            "indexdef": "CREATE UNIQUE INDEX bank_statement_reconciliation_pkey ON bank_statement_reconciliation USING btree (id)"
+          },
+          {
+            "tablename": "bank_statement_reconciliation",
+            "indexname": "statement_object",
+            "indexdef": "CREATE UNIQUE INDEX statement_object ON bank_statement_reconciliation USING btree (statement_report_key, statement_row_key) WHERE (check_direction = 'statement_to_transaction'::text)"
+          },
+          {
+            "tablename": "bank_statement_reconciliation",
+            "indexname": "transaction_object",
+            "indexdef": "CREATE UNIQUE INDEX transaction_object ON bank_statement_reconciliation USING btree (statement_report_key, bank_transaction_id) WHERE (check_direction = 'transaction_to_statement'::text)"
+          },
+          {
+            "tablename": "bank_transactions",
+            "indexname": "bank_transactions_ledger_transaction_id_key",
+            "indexdef": "CREATE UNIQUE INDEX bank_transactions_ledger_transaction_id_key ON bank_transactions USING btree (ledger_transaction_id)"
+          },
+          {
+            "tablename": "bank_transactions",
+            "indexname": "bank_transactions_pkey",
+            "indexdef": "CREATE UNIQUE INDEX bank_transactions_pkey ON bank_transactions USING btree (id)"
+          },
+          {
+            "tablename": "bank_transactions",
+            "indexname": "bank_transactions_report_key_report_row_key_key",
+            "indexdef": "CREATE UNIQUE INDEX bank_transactions_report_key_report_row_key_key ON bank_transactions USING btree (report_key, report_row_key)"
+          },
+          {
+            "tablename": "bank_transactions",
+            "indexname": "bank_transactions_source_marker_key",
+            "indexdef": "CREATE UNIQUE INDEX bank_transactions_source_marker_key ON bank_transactions USING btree (source_marker)"
+          },
+          {
+            "tablename": "email",
+            "indexname": "email_id_report_key_key",
+            "indexdef": "CREATE UNIQUE INDEX email_id_report_key_key ON email USING btree (id, report_key)"
+          },
+          {
+            "tablename": "email",
+            "indexname": "email_pkey",
+            "indexdef": "CREATE UNIQUE INDEX email_pkey ON email USING btree (id)"
+          },
+          {
+            "tablename": "email_source_item",
+            "indexname": "email_source_item_pkey",
+            "indexdef": "CREATE UNIQUE INDEX email_source_item_pkey ON email_source_item USING btree (id)"
+          },
+          {
+            "tablename": "email_source_item",
+            "indexname": "email_source_item_source_id_folder_uid_validity_uid_key",
+            "indexdef": "CREATE UNIQUE INDEX email_source_item_source_id_folder_uid_validity_uid_key ON email_source_item USING btree (source_id, folder, uid_validity, uid)"
+          },
+          {
+            "tablename": "email_source_item",
+            "indexname": "pending_source_items",
+            "indexdef": "CREATE INDEX pending_source_items ON email_source_item USING btree (source_id, folder, uid_validity, uid) WHERE (status = ANY (ARRAY['pending'::text, 'failed'::text]))"
+          },
+          {
+            "tablename": "email_sync_checkpoint",
+            "indexname": "email_sync_checkpoint_pkey",
+            "indexdef": "CREATE UNIQUE INDEX email_sync_checkpoint_pkey ON email_sync_checkpoint USING btree (source_id, folder)"
+          },
+          {
+            "tablename": "ledger_write_attempt",
+            "indexname": "ledger_write_attempt_pkey",
+            "indexdef": "CREATE UNIQUE INDEX ledger_write_attempt_pkey ON ledger_write_attempt USING btree (id)"
+          },
+          {
+            "tablename": "schema_version",
+            "indexname": "schema_version_pkey",
+            "indexdef": "CREATE UNIQUE INDEX schema_version_pkey ON schema_version USING btree (version)"
+          }
+        ]
+      }
+    }
+  ]
+}

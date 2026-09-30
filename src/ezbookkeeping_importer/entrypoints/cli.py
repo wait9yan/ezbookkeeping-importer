@@ -174,8 +174,7 @@ def execute_command(args):
 def _execute(args, runtime):
     store = runtime.store
     if args.command == "migrate":
-        store.migrate()
-        return {"schema_version": 1}
+        return {"schema_version": runtime.schema_version}
     if args.command == "sync":
         return {
             "queued": request_sync(store, args.since, args.until),
@@ -216,12 +215,14 @@ def _execute(args, runtime):
     if args.command == "doctor":
         return {
             "database": bool(store.one("SELECT 1 AS connected")),
+            "schema_ready": True,
+            "schema_version": runtime.schema_version,
             "account_count": len(runtime.ledger.accounts()),
             "category_count": len(runtime.ledger.categories()),
             "configuration_valid": True,
             "imap_connection": "not_checked",
             "ai_connection": "not_checked",
-            "note": "配置已校验，仅检查数据库与账本只读连通性；未连接 IMAP/AI，未执行生产写入验收",
+            "note": "配置已校验，检查数据库结构就绪和账本只读连通性；未连接 IMAP/AI，未执行生产写入验收",
         }
     if args.command == "restore-audit":
         return maintenance.restore_audit(store, runtime.ledger)

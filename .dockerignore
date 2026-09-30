@@ -10,3 +10,4 @@ src/**/*.pyc
 !migrations/**
 !docker/
 !docker/ebki
+!hatch_build.py

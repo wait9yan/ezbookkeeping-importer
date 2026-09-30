@@ -1,4 +1,4 @@
-"""Explicit migrate-only initialization, with mocked database connections and DDL."""
+"""数据库连接与建库边界；迁移链通过独立真实数据库测试验证。"""
 
 from contextlib import contextmanager
 from urllib.parse import quote
@@ -29,6 +29,10 @@ class Connection:
             return SimpleNamespace(
                 fetchone=lambda: {"max_identifier_length": self.identifier_limit}
             )
+        if statement == "SELECT pg_try_advisory_lock(780419) AS locked":
+            return SimpleNamespace(fetchone=lambda: {"locked": True})
+        if statement == "SELECT 1 FROM pg_database WHERE datname=%s":
+            return SimpleNamespace(fetchone=lambda: None)
         if self.ddl_error:
             raise self.ddl_error
         return SimpleNamespace(fetchall=lambda: [])
@@ -77,13 +81,11 @@ def test_missing_database_is_created_once_then_original_target_migrates(monkeypa
         kwargs["autocommit"] is True and kwargs["connect_timeout"] == 7 for _, kwargs in calls
     )
     assert "dbname" not in calls[0][1] and "dbname" not in calls[2][1]
-    assert len(maintenance.statements) == 2
-    assert maintenance.statements[1].as_string() == 'CREATE DATABASE "synthetic-db"'
+    assert len(maintenance.statements) == 4
+    assert maintenance.statements[3].as_string() == 'CREATE DATABASE "synthetic-db"'
     assert maintenance.closed and maintenance.transactions == []
     assert target.statements == []  # Constructor never creates tables.
-    store.migrate()
-    assert target.transactions == ["begin", "commit"]
-    assert any("CREATE TABLE schema_version" in str(s) for s in target.statements)
+    assert target.transactions == []
     store.close()
     assert target.closed
 
@@ -91,10 +93,9 @@ def test_missing_database_is_created_once_then_original_target_migrates(monkeypa
 def test_existing_database_uses_single_connection_and_no_create(monkeypatch):
     target = Connection()
     calls = connect_sequence(monkeypatch, [target])
-    store = postgres.PostgresStore(DSN, create_database=True)
+    postgres.PostgresStore(DSN, create_database=True)
     assert len(calls) == 1 and target.statements == []
-    store.migrate()
-    assert target.transactions == ["begin", "commit"]
+    assert target.transactions == []
 
 
 @pytest.mark.parametrize(
@@ -171,7 +172,7 @@ def test_identifier_is_quoted_and_never_interpolated(monkeypatch):
     maintenance = Connection()
     connect_sequence(monkeypatch, [missing(), maintenance, Connection()])
     postgres.PostgresStore(dsn, create_database=True)
-    query = maintenance.statements[1]
+    query = maintenance.statements[3]
     assert isinstance(query, sql.Composed)
     assert query.as_string() == 'CREATE DATABASE "synthetic""; DROP DATABASE other; --"'
 
@@ -180,10 +181,9 @@ def test_concurrent_creation_still_reconnects_and_migrates(monkeypatch):
     maintenance = Connection(psycopg.errors.DuplicateDatabase("synthetic-server-secret"))
     target = Connection()
     calls = connect_sequence(monkeypatch, [missing(), maintenance, target])
-    store = postgres.PostgresStore(DSN, create_database=True)
-    store.migrate()
+    postgres.PostgresStore(DSN, create_database=True)
     assert len(calls) == 3 and maintenance.closed
-    assert target.transactions == ["begin", "commit"]
+    assert target.transactions == []
 
 
 def test_other_ddl_errors_remain_failures_and_are_not_auth_errors(monkeypatch):
@@ -221,9 +221,9 @@ def test_reconnect_failure_does_not_fake_success(monkeypatch):
         "doctor",
     ],
 )
-def test_only_migrate_has_database_creation_capability(command):
+def test_run_and_migrate_have_database_creation_capability(command):
     assert ("create_database" in command_capabilities(command, "rules_only")) is (
-        command == "migrate"
+        command in {"migrate", "run"}
     )
 
 
@@ -253,7 +253,7 @@ def test_server_identifier_limit_allows_exact_byte_boundary(monkeypatch):
     postgres.PostgresStore(
         "postgresql://synthetic-host/" + quote(name, safe=""), create_database=True
     )
-    assert isinstance(maintenance.statements[1], sql.Composed)
+    assert isinstance(maintenance.statements[3], sql.Composed)
 
 
 def test_invalid_server_identifier_limit_is_explicit_and_does_not_create(monkeypatch):
@@ -265,3 +265,76 @@ def test_invalid_server_identifier_limit_is_explicit_and_does_not_create(monkeyp
     assert caught.value.code == "invalid_identifier_limit"
     assert maintenance.statements == ["SHOW max_identifier_length"] and maintenance.closed
     assert "synthetic-invalid-value" not in str(caught.value)
+
+
+def test_concurrent_creator_is_rechecked_under_maintenance_lock(monkeypatch):
+    class ExistingDatabase(Connection):
+        def execute(self, statement, params=()):
+            if statement == "SELECT 1 FROM pg_database WHERE datname=%s":
+                self.statements.append(statement)
+                assert params == ("synthetic-db",)
+                return SimpleNamespace(fetchone=lambda: {"exists": 1})
+            return super().execute(statement, params)
+
+    maintenance = ExistingDatabase()
+    connect_sequence(monkeypatch, [missing(), maintenance, Connection()])
+    postgres.PostgresStore(DSN, create_database=True)
+    assert not any(isinstance(query, sql.Composed) for query in maintenance.statements)
+    assert maintenance.closed
+
+
+def test_stop_during_database_creation_lock_releases_maintenance_connection(monkeypatch):
+    from threading import Event
+    from ezbookkeeping_importer.domain.errors import StartupInterrupted
+
+    stopped = Event()
+    class BusyMaintenance(Connection):
+        def execute(self, statement, params=()):
+            if statement == "SELECT pg_try_advisory_lock(780419) AS locked":
+                self.statements.append(statement)
+                stopped.set()
+                return SimpleNamespace(fetchone=lambda: {"locked": False})
+            return super().execute(statement, params)
+
+    maintenance = BusyMaintenance()
+    calls = connect_sequence(monkeypatch, [missing(), maintenance])
+    with pytest.raises(StartupInterrupted):
+        postgres.PostgresStore(DSN, create_database=True, stop_event=stopped)
+    assert len(calls) == 2 and maintenance.closed
+    assert not any(isinstance(query, sql.Composed) for query in maintenance.statements)
+
+
+def test_database_creation_lock_wait_is_bounded(monkeypatch):
+    class BusyMaintenance(Connection):
+        def execute(self, statement, params=()):
+            if statement == "SELECT pg_try_advisory_lock(780419) AS locked":
+                self.statements.append(statement)
+                return SimpleNamespace(fetchone=lambda: {"locked": False})
+            return super().execute(statement, params)
+
+    maintenance = BusyMaintenance()
+    connect_sequence(monkeypatch, [missing(), maintenance])
+    times = iter([0, 100])
+    monkeypatch.setattr(postgres.time, 'monotonic', lambda: next(times))
+    with pytest.raises(DatabaseDiagnosticError, match='initialization_busy'):
+        postgres.PostgresStore(DSN, create_database=True)
+    assert maintenance.closed
+
+
+def test_worker_session_lock_has_one_balanced_acquisition(monkeypatch):
+    class LockConnection(Connection):
+        broken = False
+        def execute(self, statement, params=()):
+            self.statements.append(statement)
+            return SimpleNamespace(fetchone=lambda: {"locked": True, "unlocked": True})
+
+    connection = LockConnection()
+    connect_sequence(monkeypatch, [connection])
+    store = postgres.PostgresStore(DSN)
+    assert store.lock_worker() and store.lock_worker()
+    store.unlock_worker()
+    store.unlock_worker()
+    assert connection.statements == [
+        'SELECT pg_try_advisory_lock(780417) AS locked',
+        'SELECT pg_advisory_unlock(780417) AS unlocked',
+    ]

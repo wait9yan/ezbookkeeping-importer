@@ -1,4 +1,7 @@
 from contextlib import ExitStack
+import json
+
+from .application.events import safe_event
 
 from .adapters.llm.openai import AIClient
 from .adapters.network import SERVICE_TIMEOUT_SECONDS
@@ -11,6 +14,11 @@ from .config import Settings, validate_command
 from .domain.errors import ImporterError
 
 
+def startup_progress(event: str, version: int | None = None):
+    fields = {} if version is None else {"version": version}
+    print(json.dumps(safe_event({"event": event, **fields}), ensure_ascii=False), flush=True)
+
+
 class Runtime:
     def __init__(
         self,
@@ -19,6 +27,7 @@ class Runtime:
         command: str = "run",
         action: str | None = None,
         account_id: str | None = None,
+        stop_event=None,
     ):
         self.settings = settings
         self.capabilities = validate_command(
@@ -31,11 +40,24 @@ class Runtime:
         # Each constructed resource is registered immediately; a later constructor failure
         # closes everything already created before the exception reaches the CLI.
         with ExitStack() as resources:
-            store_options = (
+            store_options: dict = (
                 {"create_database": True} if "create_database" in self.capabilities else {}
             )
+            if stop_event is not None:
+                store_options["stop_event"] = stop_event
+            if command == "run":
+                startup_progress("database_preparing")
             self.store = PostgresStore(settings.database_url.get_secret_value(), **store_options)
             resources.callback(self.store.close)
+            if command in {"run", "migrate"}:
+                migration_options: dict = {"stop_event": stop_event, "hold_worker": command == "run"}
+                if command == "run":
+                    migration_options["progress"] = startup_progress
+                self.schema_version = self.store.migrate(**migration_options)
+                if command == "run":
+                    startup_progress("database_ready", self.schema_version)
+            else:
+                self.schema_version = self.store.check_schema()
             if "ledger" in self.capabilities:
                 self._ledger = EzBookkeepingClient(
                     settings.ledger_url,

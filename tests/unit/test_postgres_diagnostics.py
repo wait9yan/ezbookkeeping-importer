@@ -95,8 +95,8 @@ def test_missing_database_diagnostic_identifies_explicit_migrate_initialization(
     diagnostic = postgres.database_diagnostic(
         psycopg.errors.InvalidCatalogName("private-database"), "connect"
     )
-    assert "运行 migrate 可尝试创建" in str(diagnostic)
-    assert "其他命令不会创建数据库" in str(diagnostic)
+    assert "run 或 migrate 可尝试创建" in str(diagnostic)
+    assert "查询与诊断命令不会创建数据库" in str(diagnostic)
     assert "独立 importer 数据库" in str(diagnostic)
 
 
@@ -192,6 +192,8 @@ def test_migration_error_is_safe_and_transaction_rolls_back(monkeypatch, error, 
 
     monkeypatch.setattr(postgres.psycopg, "connect", lambda *a, **k: Connection())
     store = postgres.PostgresStore(DSN)
+    monkeypatch.setattr(store, "lock_worker", lambda: True)
+    monkeypatch.setattr(store, "unlock_worker", lambda: None)
     with pytest.raises(DatabaseDiagnosticError) as caught:
         store.migrate()
     assert caught.value.stage == "migrate" and caught.value.code == code
@@ -210,5 +212,7 @@ def test_unrelated_programming_error_is_not_mislabeled(monkeypatch):
 
     monkeypatch.setattr(postgres.psycopg, "connect", lambda *a, **k: Connection())
     store = postgres.PostgresStore(DSN)
-    with pytest.raises(psycopg.errors.SyntaxError):
+    with pytest.raises(DatabaseDiagnosticError) as caught:
         store.migrate()
+    assert caught.value.code == "unknown" and caught.value.sqlstate == "42601"
+    assert "synthetic bad SQL" not in str(caught.value)

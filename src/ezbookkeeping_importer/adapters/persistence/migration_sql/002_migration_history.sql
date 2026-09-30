@@ -1,0 +1,1 @@
+../../../../../migrations/002_migration_history.sql

@@ -12,15 +12,15 @@ ENV UV_PYTHON_DOWNLOADS=never \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock hatch_build.py ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 COPY src ./src
 COPY migrations ./migrations
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
-# 确认 wheel 内 SQL 已解析符号链接，不依赖运行镜像中的构建源码。
-RUN python -c 'from importlib.resources import files; from pathlib import Path; assert files("ezbookkeeping_importer.adapters.persistence").joinpath("schema.sql").read_bytes() == Path("migrations/001_initial.sql").read_bytes()'
+# 确认 wheel 内 SQL 与全链契约已解析，不依赖运行镜像中的构建源码。
+RUN python -c 'from importlib.resources import files; from pathlib import Path; assert files("ezbookkeeping_importer.adapters.persistence").joinpath("schema.sql").read_bytes() == Path("migrations/001_initial.sql").read_bytes(); from ezbookkeeping_importer.adapters.persistence.migrations import load_migrations; load_migrations()'
 
 FROM base AS runtime
 WORKDIR /app

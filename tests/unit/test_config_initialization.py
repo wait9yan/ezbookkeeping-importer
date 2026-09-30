@@ -42,6 +42,7 @@ def command_environment(tmp_path, monkeypatch):
         loaded.append(settings)
         return SimpleNamespace(
             store=SimpleNamespace(migrate=lambda: None, one=lambda sql: {"connected": True}),
+            schema_version=2,
             ledger=SimpleNamespace(accounts=lambda: [], categories=lambda: []),
             close=lambda: None,
         )

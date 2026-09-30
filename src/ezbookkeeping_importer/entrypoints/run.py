@@ -2,6 +2,7 @@
 
 from ..bootstrap import Runtime
 from ..config import load_settings
+from ..domain.errors import StartupInterrupted
 from . import worker
 
 
@@ -10,7 +11,10 @@ def run_service(config_path: str) -> int:
         settings = load_settings(config_path, command="run")
         if stopping.is_set():
             return 0
-        runtime = Runtime(settings, command="run")
+        try:
+            runtime = Runtime(settings, command="run", stop_event=stopping)
+        except StartupInterrupted:
+            return 0
         try:
             worker.run(runtime, stop_event=stopping)
         finally:

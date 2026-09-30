@@ -170,7 +170,7 @@ def command_capabilities(
         capabilities.add("ledger")
     elif command not in LOCAL_COMMANDS:
         raise ConfigurationError("unknown command dependency profile")
-    if command == "migrate":
+    if command in {"migrate", "run"}:
         capabilities.add("create_database")
     if command == "run":
         capabilities.update({"evidence", "pipeline"})

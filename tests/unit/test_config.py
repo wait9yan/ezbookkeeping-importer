@@ -52,7 +52,7 @@ def cli_configuration(config, monkeypatch):
 
     def runtime(settings, **kwargs):
         loaded.append(settings)
-        return SimpleNamespace(store=SimpleNamespace(migrate=lambda: None), close=lambda: None)
+        return SimpleNamespace(store=SimpleNamespace(), schema_version=2, close=lambda: None)
 
     monkeypatch.setattr(cli, "Runtime", runtime)
     return loaded
@@ -94,7 +94,7 @@ def test_cli_missing_default_configuration_initializes_defaults(
     assert len(cli_configuration) == 1
     assert cli_configuration[0].mail.source_id == "qq-primary"
     assert cli_configuration[0].classification_mode == "ai"
-    assert json.loads(capsys.readouterr().out) == {"schema_version": 1}
+    assert json.loads(capsys.readouterr().out) == {"schema_version": 2}
     assert Path("data/config.toml").is_file()
 
 
@@ -347,6 +347,12 @@ def test_cli_validation_precedes_runtime_and_does_not_leak(config, monkeypatch, 
 
 
 class Resource:
+    def migrate(self, **kwargs):
+        return 2
+
+    def check_schema(self):
+        return 2
+
     def __init__(self):
         self.closed = False
 
@@ -492,6 +498,7 @@ def test_doctor_reports_unchecked_mail_and_ai_connections(config, monkeypatch, c
     state = {"closed": False}
     runtime = SimpleNamespace(
         store=SimpleNamespace(one=lambda _: {"connected": True}),
+        schema_version=2,
         ledger=SimpleNamespace(accounts=lambda: [], categories=lambda: []),
         close=lambda: state.update(closed=True),
     )
@@ -549,7 +556,7 @@ def test_runtime_database_creation_is_capability_controlled(
     environment(monkeypatch)
     runtime = bootstrap.Runtime(load_settings(str(config), command=command), command=command)
     kwargs = constructors.arguments["PostgresStore"][1]
-    assert kwargs == ({"create_database": True} if command == "migrate" else {})
+    assert kwargs == ({"create_database": True} if command in {"migrate", "run"} else {})
     runtime.close()
 
 
@@ -594,7 +601,7 @@ def test_run_has_full_capabilities_and_required_configuration(config, monkeypatc
     from ezbookkeeping_importer.config import command_capabilities
 
     assert command_capabilities("run", "ai") == {
-        "database", "ledger", "mail", "ai", "evidence", "pipeline"
+        "database", "ledger", "mail", "ai", "evidence", "pipeline", "create_database"
     }
     with pytest.raises(ConfigurationError, match="EBKI_DATABASE_URL"):
         load_settings(str(config), command="run")
@@ -632,3 +639,49 @@ def test_recheck_accepts_no_batch_bypass_options():
     with pytest.raises(SystemExit) as error:
         cli.parse_command(parser, ["recheck", "--action", "confirm-new"])
     assert error.value.code == 2
+
+
+def test_schema_failure_closes_store_before_other_service_construction(
+    config, monkeypatch, constructors
+):
+    from ezbookkeeping_importer.domain.errors import DatabaseDiagnosticError
+
+    environment(monkeypatch)
+    def reject(self, **kwargs):
+        raise DatabaseDiagnosticError('schema', 'schema_drift', '结构漂移')
+    monkeypatch.setattr(Resource, 'migrate', reject)
+    with pytest.raises(DatabaseDiagnosticError, match='schema_drift'):
+        bootstrap.Runtime(load_settings(str(config)))
+    assert set(constructors.created) == {'PostgresStore'}
+    assert constructors.created['PostgresStore'].closed
+
+
+def test_run_prepares_schema_with_stop_identity_and_safe_progress(
+    config, monkeypatch, constructors, capsys
+):
+    import json
+    from threading import Event
+    from unittest.mock import Mock
+
+    environment(monkeypatch)
+    stopped = Event()
+    migrate = Mock(return_value=2)
+    monkeypatch.setattr(Resource, 'migrate', migrate)
+    runtime = bootstrap.Runtime(load_settings(str(config)), stop_event=stopped)
+    migrate.assert_called_once_with(stop_event=stopped, hold_worker=True,
+                                   progress=bootstrap.startup_progress)
+    assert constructors.arguments['PostgresStore'][1]['stop_event'] is stopped
+    output = capsys.readouterr().out
+    events = [json.loads(line) for line in output.splitlines()]
+    assert [record['event'] for record in events] == ['database_preparing', 'database_ready']
+    assert events[-1]['version'] == 2
+    assert all(value not in output for value in ENV.values())
+    runtime.close()
+
+
+def test_migrate_does_not_print_startup_progress(config, monkeypatch, constructors, capsys):
+    environment(monkeypatch)
+    runtime = bootstrap.Runtime(load_settings(str(config), command='migrate'), command='migrate')
+    assert runtime.schema_version == 2
+    assert capsys.readouterr().out == ''
+    runtime.close()

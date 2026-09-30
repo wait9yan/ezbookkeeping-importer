@@ -25,10 +25,14 @@ class DatabaseDiagnosticError(ImporterError):
         self.stage = stage
         self.code = code
         self.sqlstate = sqlstate
-        label = {"connect": "连接", "initialize": "数据库初始化", "migrate": "迁移"}[stage]
+        label = {"connect": "连接", "initialize": "数据库初始化", "migrate": "迁移", "schema": "结构检查"}[stage]
         state = f", SQLSTATE={sqlstate}" if sqlstate else ""
         super().__init__(f"PostgreSQL {label}失败 [{code}{state}]：{reason}")
 
 
 class LogPersistenceError(OSError):
     """运行日志失败；必须穿过业务异常处理边界，不改变已提交业务状态。"""
+
+
+class StartupInterrupted(BaseException):
+    """启动迁移收到停止请求；回滚当前版本并由 run 正常退出。"""

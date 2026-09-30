@@ -257,6 +257,7 @@ def test_single_process_service_releases_lock_after_signal(
 ):
     import os
     import signal
+    import time
     from ezbookkeeping_importer.entrypoints import run, worker
 
     store = database.connect()
@@ -276,7 +277,11 @@ def test_single_process_service_releases_lock_after_signal(
     monkeypatch.setattr(worker, "cycle", stop_cycle)
     assert run.run_service("unused-synthetic-config") == 0
     runtime.close.assert_called_once()
-    assert observer.lock_worker()
+    # Client socket close precedes the server processing EOF and releasing session locks.
+    deadline = time.monotonic() + 2
+    while not observer.lock_worker():
+        assert time.monotonic() < deadline, "服务关闭后 worker 会话锁未释放"
+        time.sleep(0.01)
 
 
 def test_single_process_lock_conflict_preserves_existing_owner(

@@ -13,6 +13,10 @@ import time
 from ..domain.errors import LogPersistenceError
 
 EVENT_LABELS = {
+    "database_preparing": "正在准备数据库",
+    "database_migration_started": "开始升级数据库结构",
+    "database_migration_completed": "数据库结构版本已提交",
+    "database_ready": "数据库结构已就绪",
     "worker_starting": "服务启动中",
     "worker_started": "服务已就绪",
     "worker_stop_requested": "已收到停止请求",

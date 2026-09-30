@@ -1,7 +1,8 @@
 from contextlib import contextmanager
 from pathlib import Path
 import re
-import uuid
+from threading import Event, Thread
+import time
 from typing import Any
 
 import psycopg
@@ -9,8 +10,11 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.conninfo import conninfo_to_dict
 
-from ...domain.errors import DatabaseDiagnosticError, ImporterError
+from ...domain.errors import Conflict, DatabaseDiagnosticError, StartupInterrupted
 from psycopg.types.json import Jsonb
+
+from .migrations import apply_migration, load_migrations, schema_error
+from .schema_contract import schema_signature
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
@@ -19,12 +23,12 @@ DIAGNOSTICS = {
     "authentication_failed": "密码认证失败；检查 EBKI_DATABASE_URL 中的用户名和密码，并向数据库管理员核对认证配置。",
     "authorization_failed": "连接身份未获授权；核对数据库角色、认证方式及 pg_hba.conf 规则。",
     "role_missing": "数据库角色不存在；核对 EBKI_DATABASE_URL 中的角色名，并由管理员确认角色已创建。",
-    "missing_database": "目标数据库不存在；核对 EBKI_DATABASE_URL 中明确指定的数据库名，运行 migrate 可尝试创建该独立 importer 数据库；其他命令不会创建数据库。",
+    "missing_database": "目标数据库不存在；核对 EBKI_DATABASE_URL 中明确指定的数据库名，run 或 migrate 可尝试创建该独立 importer 数据库；查询与诊断命令不会创建数据库。",
     "dns_failed": "数据库地址无法解析；检查 EBKI_DATABASE_URL 的主机名，以及当前进程或容器的 DNS 和网络环境。",
     "connection_refused": "数据库连接被拒绝；检查服务是否运行、监听端口、容器网络和端口映射。",
     "connection_timeout": "数据库连接超时；检查网络可达性、防火墙、监听端口及 connect_timeout 设置。",
     "ssl_failed": "TLS/SSL 连接校验失败或设置不兼容；检查 sslmode、证书路径、证书信任链及服务器 SSL 支持。",
-    "permission_denied": "数据库权限不足；连接阶段核对 CONNECT 权限，迁移阶段核对目标 schema 的 USAGE/CREATE 权限。",
+    "permission_denied": "数据库权限不足；连接阶段核对 CONNECT 权限，初始化核对 schema CREATE；升级通常需要对象所有者权限，可由管理员先执行 migrate。",
     "connection_lost": "数据库连接不可用或已中断；检查服务状态与网络，确认恢复后再执行命令。",
     "server_unavailable": "数据库当前无法接受连接；检查启动、恢复或停机状态。",
     "too_many_connections": "数据库连接数量已达限制；检查连接占用与服务器连接配额。",
@@ -113,14 +117,15 @@ def connection_timeout(dsn: str) -> int:
 
 
 class PostgresStore:
-    def __init__(self, dsn: str, *, create_database: bool = False):
+    def __init__(self, dsn: str, *, create_database: bool = False, stop_event=None):
+        self._worker_locked = False
         timeout = connection_timeout(dsn)
         try:
             self.connection = self._connect(dsn, timeout)
         except DatabaseDiagnosticError as exc:
             if not create_database or exc.code != "missing_database":
                 raise
-            self._initialize_database(dsn, timeout)
+            self._initialize_database(dsn, timeout, stop_event=stop_event)
             # A successful CREATE (including a concurrent creator) is not enough: reconnect
             # to the original, exact target before the caller can execute migrations.
             self.connection = self._connect(dsn, timeout)
@@ -140,7 +145,7 @@ class PostgresStore:
             raise database_diagnostic(exc, "initialize" if maintenance else "connect") from None
 
     @classmethod
-    def _initialize_database(cls, dsn: str, timeout: int):
+    def _initialize_database(cls, dsn: str, timeout: int, *, stop_event=None):
         target = conninfo_to_dict(dsn).get("dbname")
         if not isinstance(target, str) or not target:
             raise DatabaseDiagnosticError(
@@ -152,7 +157,26 @@ class PostgresStore:
         try:
             try:
                 cls._validate_database_name(maintenance, target)
-                maintenance.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(target)))
+                # Serialize creators in the maintenance database, including pg_database's
+                # internal unique indexes. Do not treat unrelated UniqueViolation as success.
+                deadline = time.monotonic() + min(timeout, DEFAULT_CONNECT_TIMEOUT_SECONDS)
+                while True:
+                    cls._check_stop(stop_event)
+                    if maintenance.execute(
+                        "SELECT pg_try_advisory_lock(780419) AS locked"
+                    ).fetchone()["locked"]:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise DatabaseDiagnosticError(
+                            "initialize", "initialization_busy",
+                            "其他实例正在创建数据库；本次等待已到期，请稍后重启。"
+                        )
+                    time.sleep(0.05)
+                existing = maintenance.execute(
+                    "SELECT 1 FROM pg_database WHERE datname=%s", (target,)
+                ).fetchone()
+                if not existing:
+                    maintenance.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(target)))
             except psycopg.errors.DuplicateDatabase:
                 # Another migrate process created the same explicitly requested database.
                 # The caller still reconnects and runs its normal transactional migration.
@@ -182,80 +206,117 @@ class PostgresStore:
                 "EBKI_DATABASE_URL 中的 dbname 超过服务器 max_identifier_length 字节限制；未创建截断名称的数据库，请明确配置更短的目标名称。",
             ) from None
 
-    def migrate(self):
-        try:
-            with self.transaction():
-                self.execute("SELECT pg_advisory_xact_lock(780416)")
-                tables = {
-                    row["tablename"]
-                    for row in self.all(
-                        "SELECT tablename FROM pg_tables WHERE schemaname=current_schema()"
-                    )
-                }
-                expected = set(re.findall(r"CREATE TABLE (\w+)", SCHEMA.read_text()))
-                if tables:
-                    if tables != expected:
-                        raise ImporterError(
-                            "schema is old or incomplete; initialize an empty schema"
-                        )
-                    if self.all("SELECT version FROM schema_version") != [{"version": 1}]:
-                        raise ImporterError("unsupported schema version")
-                    self._validate_schema()
-                    return
-                self.execute(SCHEMA.read_text())
-        except (psycopg.OperationalError, psycopg.errors.InsufficientPrivilege) as exc:
-            raise database_diagnostic(exc, "migrate") from None
-
     def _schema_signature(self, namespace: str) -> dict:
-        relations = self.all(
-            """SELECT c.relname,a.attname,format_type(a.atttypid,a.atttypmod) AS type,
-            a.attnotnull,a.attgenerated,pg_get_expr(d.adbin,d.adrelid) AS default_expression,
-            obj_description(c.oid) AS table_comment,col_description(c.oid,a.attnum) AS column_comment
-            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-            JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
-            LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
-            WHERE n.nspname=%s AND c.relkind='r' ORDER BY c.relname,a.attnum""",
-            (namespace,),
-        )
-        constraints = self.all(
-            """SELECT c.relname,k.contype,pg_get_constraintdef(k.oid) AS definition
-            FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid
-            JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s
-            ORDER BY c.relname,k.contype,pg_get_constraintdef(k.oid)""",
-            (namespace,),
-        )
-        indexes = self.all(
-            """SELECT tablename,indexname,indexdef FROM pg_indexes
-            WHERE schemaname=%s ORDER BY tablename,indexname""",
-            (namespace,),
-        )
-        # PostgreSQL renders schema qualifiers depending on search_path. Normalize
-        # only the trusted namespace, preserving all actual types and constraints.
-        import json
+        return schema_signature(self.connection, namespace)
 
-        value = json.dumps(
-            {"columns": relations, "constraints": constraints, "indexes": indexes}, sort_keys=True
-        )
-        return json.loads(
-            value.replace(namespace + ".", "").replace('\\"' + namespace + '\\".', "")
-        )
+    def _schema_state(self, migrations) -> int:
+        row = self.one("SELECT current_schema() AS namespace")
+        namespace = row["namespace"]
+        if not namespace:
+            raise schema_error("missing_schema", "连接的 search_path 没有可用 schema；由管理员准备目标 schema。")
+        actual = self._schema_signature(namespace)
+        if not any(actual[key] for key in ("relations", "types", "routines")):
+            return 0
+        if not any(r["relname"] == "schema_version" and r["relkind"] == "r"
+                   for r in actual["relations"]):
+            raise schema_error("schema_drift", "schema contract differs；目标 schema 存在其他应用对象或缺少迁移历史。")
+        versions = self.all("SELECT version FROM schema_version ORDER BY version")
+        numbers = [item["version"] for item in versions]
+        if not numbers or any(type(value) is not int or value <= 0 for value in numbers):
+            raise schema_error("invalid_migration_history", "数据库迁移历史为空或版本非法；未修改数据。")
+        current = max(numbers)
+        if current > len(migrations):
+            raise schema_error("schema_ahead", "数据库结构版本高于当前程序；使用兼容的新版本，不能自动降级。")
+        if numbers != list(range(1, current + 1)):
+            raise schema_error("invalid_migration_history", "数据库迁移历史缺项或顺序异常；未修改数据。")
+        if actual != migrations[current - 1].signature:
+            raise schema_error("schema_drift", "schema contract differs；数据库结构与已发布版本不一致，未推测修复。")
+        if current > 1:
+            history = self.all("SELECT version,script_sha256 FROM schema_version ORDER BY version")
+            if any(item["script_sha256"] != migrations[item["version"] - 1].checksum
+                   for item in history):
+                raise schema_error("migration_checksum_mismatch", "已应用迁移的脚本摘要不一致；历史脚本不可改写。")
+        return current
 
-    def _validate_schema(self):
-        original = self.one(
-            "SELECT current_schema() AS namespace, current_setting('search_path') AS path"
-        )
-        actual = self._schema_signature(original["namespace"])
-        temporary = "ebki_contract_" + uuid.uuid4().hex
-        self.connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(temporary)))
-        self.one("SELECT set_config('search_path',%s,true)", (temporary,))
-        self.execute(SCHEMA.read_text())
-        expected = self._schema_signature(temporary)
-        self.one("SELECT set_config('search_path',%s,true)", (original["path"],))
-        self.connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(temporary)))
-        if actual != expected:
-            raise ImporterError(
-                "schema contract differs from authoritative initialization; use an empty schema"
-            )
+    def check_schema(self) -> int:
+        """查询/诊断只读检查，既不建库，也不修改旧结构。"""
+        migrations = load_migrations()
+        try:
+            with self.connection.transaction():
+                # Consistent catalog/history read without a CREATE privilege requirement.
+                self.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                current = self._schema_state(migrations)
+                if current != len(migrations):
+                    raise schema_error("schema_not_ready", "数据库结构未就绪；先停止旧 worker，再运行 migrate 或新版本 run。")
+                return current
+        except psycopg.Error as exc:
+            raise database_diagnostic(exc, "schema") from None
+
+    @staticmethod
+    def _check_stop(stop_event):
+        if stop_event is not None and stop_event.is_set():
+            raise StartupInterrupted()
+
+    @contextmanager
+    def _migration_cancellation(self, stop_event):
+        if stop_event is None:
+            yield
+            return
+        finished = Event()
+        errors = []
+
+        def watch():
+            while not finished.wait(0.05):
+                if stop_event.is_set():
+                    try:
+                        self.connection.cancel_safe(timeout=1)
+                    except psycopg.Error as exc:
+                        errors.append(exc)
+                    return
+
+        monitor = Thread(target=watch, name="ebki-migration-cancel", daemon=True)
+        monitor.start()
+        try:
+            yield
+        finally:
+            finished.set()
+            monitor.join(2)
+        if errors:
+            self._check_stop(stop_event)
+            raise database_diagnostic(errors[0], "migrate") from None
+
+    def migrate(self, *, stop_event=None, hold_worker: bool = False, progress=None) -> int:
+        """每个版本独立事务；持有 worker 锁阻止旧程序在 DDL 期间工作。"""
+        migrations = load_migrations()
+        self._check_stop(stop_event)
+        acquired = not self._worker_locked
+        try:
+            if not self.lock_worker():
+                raise Conflict("another worker is already running; stop it before schema migration")
+            with self._migration_cancellation(stop_event):
+                while True:
+                    self._check_stop(stop_event)
+                    with self.transaction():
+                        self.execute("SELECT pg_advisory_xact_lock(780416)")
+                        current = self._schema_state(migrations)
+                        self._check_stop(stop_event)
+                        if current == len(migrations):
+                            return current
+                        migration = migrations[current]
+                        if progress is not None:
+                            progress("database_migration_started", migration.version)
+                        apply_migration(self.connection, migration, migrations[0].checksum)
+                        if self._schema_state(migrations) != migration.version:
+                            raise schema_error("invalid_migration", "迁移结果版本不符；当前版本已回滚。")
+                        self._check_stop(stop_event)
+                    if progress is not None:
+                        progress("database_migration_completed", migration.version)
+        except psycopg.Error as exc:
+            self._check_stop(stop_event)
+            raise database_diagnostic(exc, "migrate") from None
+        finally:
+            if acquired and not hold_worker:
+                self.unlock_worker()
 
     @contextmanager
     def transaction(self):
@@ -281,7 +342,15 @@ class PostgresStore:
         return not self.connection.closed and not self.connection.broken
 
     def lock_worker(self) -> bool:
-        return self.one("SELECT pg_try_advisory_lock(780417) AS locked")["locked"]
+        if self._worker_locked:
+            return True
+        self._worker_locked = bool(self.one("SELECT pg_try_advisory_lock(780417) AS locked")["locked"])
+        return self._worker_locked
+
+    def unlock_worker(self):
+        if self._worker_locked and self.is_connection_usable():
+            self.one("SELECT pg_advisory_unlock(780417) AS unlocked")
+        self._worker_locked = False
 
     def close(self):
         self.connection.close()
