@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from ezbookkeeping_importer.config import load_settings
+from ezbookkeeping_importer.config_initialization import initialize_default_config
 
 
 spec = importlib.util.spec_from_file_location(
@@ -14,6 +15,19 @@ spec = importlib.util.spec_from_file_location(
 assert spec is not None and spec.loader is not None
 verify_image = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(verify_image)
+
+
+def test_initial_image_configuration_uses_real_packaged_defaults(tmp_path, monkeypatch):
+    for key in os.environ:
+        if key.startswith("EBKI_"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("EBKI_DATABASE_URL", "postgresql://synthetic@database.test/ebki")
+    path = tmp_path / "config.toml"
+    initialize_default_config(path)
+    settings = load_settings(str(path), command="migrate")
+    assert settings.classification_mode == "ai"
+    assert settings.mail.source_id == "qq-primary"
+    exec(verify_image.DEFAULT_CONFIG_CHECK.replace("Path('/app/data/config.toml')", f"Path({str(path)!r})"))
 
 
 @pytest.mark.parametrize("command", ["migrate", "status", "run"])

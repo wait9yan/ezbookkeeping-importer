@@ -1,6 +1,6 @@
 # 配置入口与命令依赖
 
-应用只读取业务 TOML 和进程环境，不自动搜索 `.env`；每项服务连接只有环境变量一个来源。
+配置加载器只读取业务 TOML 和进程环境；所有 CLI 入口在读取前初始化缺失的默认业务配置。不自动搜索 `.env`，每项服务连接仍只有环境变量一个来源。
 
 ## 来源契约
 
@@ -74,7 +74,7 @@ Dockerfile、Compose、CI 或发行包变化均需验证构建到部署的完整
 - 发布校验：`python3 scripts/check-release.py vX.Y.Z --image ghcr.io/OWNER/IMAGE`。
 
 ### 3. 数据与环境契约
-`EBKI_IMAGE` 仅由 Compose 读取，空值采用 latest，支持指定版本或完整 digest；应用不读取它。生产无 build，开发覆盖不拉生产镜像。工作目录 /app、UID/GID 10001:10001 不变；统一 ./data:/app/data bind，email/reports/logs 子目录路径不变。Compose仅用简写绑定 `./data:/app/data`，配置随data目录可写；首次创建data并将config.example.toml复制为data/config.toml，配置不自动生成。CLI唯一默认data/config.toml，Docker ENTRYPOINT仅ebki并通过WORKDIR=/app复用该默认；run保持切换项目根目录和参数透传，显式--config覆盖。Compose删除init/stdin_open/tty/stop_grace_period，使用Docker默认停止期限，未决写入在下次启动核实。builder 保留 migrations 符号链接目标，runtime 只依赖安装环境；安装后的 schema.sql 必须等于权威 SQL。
+`EBKI_IMAGE` 仅由 Compose 读取，空值采用 latest，支持指定版本或完整 digest；应用不读取它。生产无 build，开发覆盖不拉生产镜像。工作目录 /app、UID/GID 10001:10001 不变；统一 ./data:/app/data bind，email/reports/logs 子目录路径不变。Compose仅用简写绑定 `./data:/app/data`，配置随data目录可写；首次准备可写data目录，所有CLI入口自动创建缺失的默认data/config.toml，具体契约见“配置文件位置”。CLI唯一默认data/config.toml，Docker ENTRYPOINT仅ebki并通过WORKDIR=/app复用该默认；run保持切换项目根目录和参数透传，显式--config覆盖。Compose删除init/stdin_open/tty/stop_grace_period，使用Docker默认停止期限，未决写入在下次启动核实。builder 保留 migrations 符号链接目标，runtime 只依赖安装环境；安装后的 schema.sql 必须等于权威 SQL。
 
 ### 4. 校验与错误矩阵
 标签格式或 pyproject 版本不符→发布失败；正式 tag 存在→拒绝覆盖；registry 仅明确404代表不存在，403/网络错误不能当作不存在。首次先推唯一构建tag创建package，再检查正式版本tag。latest 是允许更新的正式发布别名，不参与版本不存在校验；仅正式版本发布更新 latest。临时 PG 必须等 TCP 就绪；合成配置必须含 timezone 和 mail.source_id。镜像通过两种架构验证后原样传入发布job，不重建。
@@ -97,23 +97,52 @@ tests/unit/test_release_check.py 覆盖版本、已存在、404、权限及网�
 完整 PostgreSQL 集成测试门禁、同源码/同镜像核验后的安全续跑、已有 Release 标签与提交核验，以及跨版本串行更新 latest 并防止旧版覆盖均属于后续优化，尚未实施；不纳入此次“仅移除部署包”的完成条件。当前正式版本已存在时拒绝覆盖，不能将此描述成完整幂等续跑或 latest 防回退。
 
 
-## 配置文件位置
+## 配置文件位置与自动初始化（2026-09-30）
 
-### 1. 范围与签名
+### 1. 范围与触发
 
-本地CLI、./run、后台run和Docker采用同一配置入口。`ebki status` 默认读取工作目录下 `data/config.toml`；`ebki --config FILE status` 只读取显式文件。./run定位项目根目录；Docker通过WORKDIR=/app复用同一CLI默认。
+本地源码、`./run`、直接 `ebki`、安装包和 Docker 共用 CLI 初始化。首次正式命令在默认文件缺失时创建实际 `config.toml` 并继续原命令，无需用户准备 example 文件。配置生成不会隐式执行数据库迁移。
 
-### 2. 路径与失败契约
+### 2. 签名
 
-Compose挂载./data:/app/data；配置位于data/config.toml，示例config.example.toml和.env位于根目录。实际配置与凭据受Git忽略及Docker白名单保护。程序不创建或修改配置；默认或显式文件缺失均报ConfigurationError。
+- CLI 唯一默认路径为 `DEFAULT_CONFIG_PATH = "data/config.toml"`。
+- `config_initialization.initialize_default_config(path: Path) -> None` 负责创建，`load_settings(path, command=...)` 负责读取及校验。
+- `ebki status` 和 `ebki run` 初始化默认文件；`ebki --config FILE status` 只读取显式文件。
+- Docker `ENTRYPOINT ["ebki"]`、`CMD ["run"]`、`WORKDIR /app`，复用普通 CLI，不保留镜像专属初始化入口或另一份模板。
 
-### 3. 必需验证
+### 3. 来源与发布契约
 
-配置回归经parse_command与真实load_settings验证默认选择、显式优先及缺失失败；启动器参数透传与根目录定位回归保留。双架构镜像读取data卷中的合成配置，以默认入口执行维护命令。发行包不含实际data/config.toml。
+`src/ezbookkeeping_importer/config.toml` 是唯一非凭据默认资源，用 `importlib.resources` 从安装包读取，随 wheel、sdist 和镜像提供；不依赖源码目录或根 example 文件。默认业务值包含上海时区、12:00 日期时间约定、AI 分类、`qq-primary`、7 天回扫及未确认还款归属；连接信息和凭据仍只来自环境。
 
-### 4. 正确与错误
+CLI 参数解析成功并注册信号后，仅未显式指定 `--config` 时初始化默认文件。已有目标通过 lstat 判断并保留，包括空文件、目录、符号链接和非法 TOML，随后由既有加载器校验。缺失目标在同目录写完整临时文件，flush/fsync 后用无覆盖的原子操作发布；并发已有目标保留对方文件。其他 I/O 错误明确失败，正常及异常路径清理临时文件。
 
-正确：CLI单一定义默认，Docker仅执行ebki，调用方通过--config明确覆盖。错误：Dockerfile硬编码另一个配置默认值，或初始化时自动复制示例覆盖用户配置。
+`./run` 定位项目根目录；安装后 CLI 使用调用方工作目录。Compose 挂载 `./data:/app/data`，以 `10001:10001` 创建并持久化配置，宿主机必须提供写权限，不自动 chown 或提权。实际配置和 `.env` 仍受忽略及构建白名单保护。配置自动生成发生于服务连接检查之前，缺凭据时会留下已生成的合法业务文件。
+
+### 4. 校验与错误矩阵
+
+| 条件 | 结果 |
+| --- | --- |
+| 默认文件缺失且父目录可写 | 创建完整配置后继续命令 |
+| 已有合法文件（含只读文件） | 原样读取，不要求目录可写 |
+| 已有空文件或非法 TOML | 按真实配置边界失败，不替换 |
+| 父目录不可写、存储或模板读取失败 | 安全 `ConfigurationError`，不打印输入或凭据 |
+| 显式 `--config` 文件缺失 | 读取失败，不创建指定或默认文件 |
+| 帮助或参数解析错误 | 退出，不创建配置 |
+| 并发初始化 | 首个发布者胜出，不覆盖完整目标 |
+
+### 5. 正常、基础与错误案例
+
+正常：首次 `./run migrate` 自动生成业务配置，成功初始化目标库，再编辑个性化规则并运行。基础：未配置服务连接执行正式命令，配置仍生成，但命令明确报告必需环境变量缺失。错误：把空或非法已有文件视为缺失并替换，或在 `--help` 时要求数据目录写权限。
+
+### 6. 必需验证
+
+单元覆盖真实默认选择、首次生成、重复及并发无覆盖、非法已有文件保留、权限和 I/O 失败、显式路径严格失败及帮助无写入。启动器保留参数透传和根目录定位，同时验证实际 CLI 初始化。安装后的 wheel/sdist 必须可读默认资源，真实安装 CLI 在空目录生成配置；构建产物不包含实际运行配置或凭据。
+
+双架构镜像从空可写 data 挂载、通过真实默认入口执行 `migrate`、重复迁移及 `status`，不得先写合成配置绕过初始化；读取生成内容与包资源一致。后续生命周期可提供合成业务定制，但不得替代首次生成验收。非 root、PID 1、无 TTY 及停止恢复契约保持原测试强度。
+
+### 7. 正确与错误做法
+
+正确：所有入口调用同一个初始化函数，从包资源创建实际配置，已有文件交由加载器失败或读取。错误：镜像和本地各维护一套模板/初始化逻辑，构建阶段创建文件后假定 bind 挂载仍能看到，或初始化时覆盖用户配置。
 
 ## 单进程运行契约（2026-09-30）
 

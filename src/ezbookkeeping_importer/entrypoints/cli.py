@@ -15,7 +15,10 @@ from ..application.collect import request_sync, validate_scan_range
 from ..application.recheck import request_recheck, request_snapshot_recheck
 from ..bootstrap import Runtime
 from ..config import load_settings
+from ..config_initialization import initialize_default_config
 from ..domain.errors import ImporterError, LogPersistenceError
+
+DEFAULT_CONFIG_PATH = "data/config.toml"
 
 def output(value):
     print(json.dumps(issue_snapshot.normalize_json(value), ensure_ascii=False, indent=2))
@@ -61,7 +64,7 @@ def _filters(parser, *, required=False):
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="ebki", description="银行邮件导入与单次维护命令")
-    parser.add_argument("--config", default="data/config.toml")
+    parser.add_argument("--config", default=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("status", "migrate", "doctor", "restore-audit"):
         _format(commands.add_parser(name))
@@ -112,6 +115,8 @@ def _invalid_constant(value):
 
 def parse_command(parser, arguments=None):
     args = parser.parse_args(arguments)
+    args.config_explicit = hasattr(args, "config")
+    args.config = getattr(args, "config", DEFAULT_CONFIG_PATH)
     try:
         if args.command == "sync":
             validate_scan_range(args.since, args.until)
@@ -247,6 +252,8 @@ def main():
     try:
         with maintenance_signals():
             args = parse_command(build_parser())
+            if not args.config_explicit:
+                initialize_default_config(Path(args.config))
             if args.command != "run":
                 result = execute_command(args)
                 if args.format == "json":

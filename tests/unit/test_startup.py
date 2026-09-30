@@ -3,11 +3,14 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import shutil
+import sys
 from unittest.mock import Mock
 
 import pytest
 
 from ezbookkeeping_importer.entrypoints import cli, run
+from ezbookkeeping_importer.config_initialization import DEFAULT_CONFIG_RESOURCE
 
 
 @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
@@ -94,6 +97,27 @@ def test_launcher_uses_own_root_and_preserves_argument_boundaries(tmp_path):
         capture_output=True, text=True, timeout=5, check=True
     )
     assert explicit.stdout.splitlines()[5:] == args
+
+
+def test_launcher_real_cli_creates_defaults_before_missing_environment_error(tmp_path):
+    root = tmp_path / "isolated project"
+    root.mkdir()
+    launcher = root / "run"
+    launcher.write_bytes(Path("run").read_bytes())
+    launcher.chmod(0o755)
+    (root / ".env").write_text("# isolated; no service credentials\n")
+    assert shutil.which("uv") is not None
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("EBKI_")}
+    environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment["PATH"]
+    result = subprocess.run(
+        [str(launcher), "migrate"], cwd=tmp_path, env=environment,
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 1
+    assert '"error_type": "ConfigurationError"' in result.stderr
+    assert "EBKI_DATABASE_URL" in result.stderr
+    assert (root / cli.DEFAULT_CONFIG_PATH).read_bytes() == DEFAULT_CONFIG_RESOURCE.read_bytes()
+    assert not (tmp_path / cli.DEFAULT_CONFIG_PATH).exists()
 
 
 @pytest.mark.parametrize("arguments", [["worker"], ["worker", "--once"], ["run", "--once"]])

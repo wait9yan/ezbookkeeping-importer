@@ -30,16 +30,14 @@
 - `.env` 保存服务连接和运行环境参数，由启动工具注入进程环境。
 - `data/config.toml` 保存业务规则：还款映射、商户规则、分类模式、时区、日志级别和稳定邮件来源身份。`mail.source_id` 是稳定业务身份。
 
-TOML 只接受 [配置示例](../config.example.toml) 中的业务字段。服务连接信息仅从环境变量读取；未知字段统一报 `unknown TOML field`，不会被忽略或改写。
+TOML 只接受[内置默认配置](../src/ezbookkeeping_importer/config.toml)中的业务字段。默认值随安装包提供，首次正式命令自动生成实际使用的 `data/config.toml`，所有部署方式均无需复制 example 文件。服务连接信息仅从环境变量读取；未知字段统一报 `unknown TOML field`，不会被忽略或改写。
 
 ```sh
 cp .env.example .env
-mkdir -p data
-cp config.example.toml data/config.toml
 uv sync --frozen
 ```
 
-先填写 `.env` 的数据库连接。`migrate`、`status`、`issues` 和 `sync` 不要求账本、邮箱或模型凭据；启动前再补齐对应服务。项目启动器固定使用项目目录的 `.env` 和默认 `data/config.toml`，日常只需：
+先填写 `.env` 的数据库连接。`migrate`、`status`、`issues` 和 `sync` 不要求账本、邮箱或模型凭据；启动前再补齐对应服务。首次 `migrate` 自动生成默认配置并继续初始化数据库；如需修改分类模式或个性化业务规则，可在生成后、启动服务前编辑该文件。项目启动器固定使用项目目录的 `.env` 和默认 `data/config.toml`，日常只需：
 
 ```sh
 ./run migrate   # 首次初始化
@@ -128,7 +126,9 @@ sudo chown -R 10001:10001 data
 
 如需以宿主机当前用户运行，用 `id -u` 和 `id -g` 查看 ID，在 `compose.yaml` 的 `services.importer` 下显式设置 `user: "实际UID:实际GID"`，并确保挂载目录允许该身份写入。
 
-Compose 统一将宿主机 `./data` 挂载到容器 `/app/data`，应用在 `/app` 工作目录下按需创建 `email`、`reports`、`logs` 子目录。宿主机需赋予 `data` 根目录及子目录写权限，以便创建和写入运行文件。特殊部署可调整挂载源，容器目标保持固定。Compose 不另起 PostgreSQL 服务或创建外部网络；目标库由 `migrate` 按上述权限初始化。Compose 只挂载整个 `data`，配置文件为 `data/config.toml`（容器内 `/app/data/config.toml`），随该目录可写。首次启动前创建 `data` 并将根目录 `config.example.toml` 复制为 `data/config.toml`，填写配置并确保 `10001:10001` 可读取配置、写入数据目录。缺少配置时应用明确失败，不自动生成文件；挂载自动创建空目录不等于配置已就绪。
+Compose 统一将宿主机 `./data` 挂载到容器 `/app/data`，应用在 `/app` 工作目录下按需创建 `email`、`reports`、`logs` 子目录。宿主机需赋予 `data` 根目录及子目录写权限，以便创建配置和运行文件。特殊部署可调整挂载源，容器目标保持固定。Compose 不另起 PostgreSQL 服务或创建外部网络；目标库由 `migrate` 按上述权限初始化。配置位于 `data/config.toml`（容器内 `/app/data/config.toml`），镜像默认入口在文件缺失时自动创建，随后继续执行原命令；部署只需准备 `.env` 和可写数据目录，无需下载或复制业务示例。生成内容使用程序内置的业务默认值，包括 AI 分类；服务凭据仍只通过环境提供。已有文件不覆盖，个性化业务规则可在生成后编辑。
+
+自动生成配置适用于当前源码构建及包含该改动的后续发布镜像。本次改动尚未发布；已发布的 `0.1.0` 镜像仍需要按对应版本文档准备业务配置。目录权限错误会明确失败，容器不会自动提权修改宿主机权限。
 
 ```sh
 docker compose pull importer
@@ -176,11 +176,11 @@ docker compose restart importer
 
 ### 配置文件位置
 
-本地 CLI 默认读取工作目录下的 `data/config.toml`；`./run` 会定位项目根目录，Docker 工作目录为 `/app`。使用 `--config FILE` 可以显式选择文件。缺少指定文件时明确报错，程序不生成或修改配置。`.env` 和 `config.example.toml` 位于根目录；备份 `data` 包含业务配置，`.env` 需单独妥善备份。
+所有 CLI 入口默认使用工作目录下的 `data/config.toml`；`./run` 会定位项目根目录，Docker 工作目录为 `/app`。首次正式命令自动创建缺失的默认配置，写入随安装包提供的业务默认值并继续原命令；本地源码、Python 包安装、容器默认入口和容器内直接执行的 `ebki` 行为一致。已有配置始终保留，包括空文件和非法 TOML，随后按原有规则校验。`--help` 不创建配置。使用 `--config FILE` 可以显式选择已准备的文件，指定文件缺失时明确报错，不自动生成或回退。备份 `data` 包含生成的业务配置，`.env` 需单独妥善备份。生成文件不含服务凭据；默认 AI 分类仍要求提供相应环境配置。
 
 ### 镜像升级与回退
 
-以下流程用于已发布镜像的部署与更新。首次部署从目标版本标签的仓库复制 `compose.yaml`、`config.example.toml` 和 `.env.example` 到独立目录，并参考该版本的 `docs/operations.md`；Compose 默认使用 `latest`。后续升级先阅读 GitHub Release 的版本说明，再对照对应版本的 Compose 和示例配置更新，不直接覆盖现有 `.env` 或 `data/config.toml`。有意修改过外部网络或挂载源时保留部署差异。
+以下流程用于已发布镜像的部署与更新。首次部署支持自动生成配置的版本时，从目标版本标签的仓库复制 `compose.yaml` 和 `.env.example` 到独立目录，并参考该版本的 `docs/operations.md`；旧版按对应文档准备业务配置。Compose 默认使用 `latest`。后续升级先阅读 GitHub Release 的版本说明，再对照对应版本的 Compose 和配置字段更新，不直接覆盖现有 `.env` 或 `data/config.toml`；镜像升级也不会重新生成已有配置。有意修改过外部网络或挂载源时保留部署差异。
 
 1. 阅读最新正式版本的 数据库结构说明，保留 `.env` 的 `EBKI_IMAGE` 为空并执行 `docker compose pull importer` 拉取 `latest`；需要固定目标版本时将该变量设为完整版本或 digest 引用。记录当前运行镜像的版本或 digest，供兼容性允许时回退。拉取失败时先解决问题，仍在运行的旧容器不受影响。
 2. 执行 `docker compose stop importer`，确认旧 worker 已停止，且没有并发维护写入，再配对备份 importer 数据库、原始邮件和配置。

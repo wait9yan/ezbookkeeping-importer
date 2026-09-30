@@ -140,7 +140,8 @@ def test_invalid_dsn_is_actionable_without_echo(monkeypatch):
     assert "private-" not in str(caught.value)
 
 
-def test_connect_error_has_safe_cli_and_traceback(monkeypatch, capsys):
+def test_connect_error_has_safe_cli_and_traceback(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
     original = psycopg.OperationalError(
         'FATAL: database "private-database" does not exist ' + SECRET_TEXT
     )

@@ -83,20 +83,19 @@ def test_cli_explicit_configuration_overrides_default(
     assert cli_configuration[0].mail.source_id == "explicit-source"
 
 
-def test_cli_missing_default_configuration_reports_error(
+def test_cli_missing_default_configuration_initializes_defaults(
     cli_configuration, monkeypatch, capsys
 ):
     import json
 
     monkeypatch.setattr("sys.argv", ["ebki", "migrate"])
 
-    assert cli.main() == 1
-    assert cli_configuration == []
-    assert json.loads(capsys.readouterr().err) == {
-        "error_type": "ConfigurationError",
-        "message": "business configuration file cannot be read",
-    }
-    assert not Path("data/config.toml").exists()
+    assert cli.main() == 0
+    assert len(cli_configuration) == 1
+    assert cli_configuration[0].mail.source_id == "qq-primary"
+    assert cli_configuration[0].classification_mode == "ai"
+    assert json.loads(capsys.readouterr().out) == {"schema_version": 1}
+    assert Path("data/config.toml").is_file()
 
 
 def test_cli_missing_explicit_configuration_reports_error(

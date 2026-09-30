@@ -61,8 +61,6 @@ flowchart LR
 
 ```sh
 cp .env.example .env
-mkdir -p data
-cp config.example.toml data/config.toml
 uv sync --frozen
 ```
 
@@ -91,13 +89,13 @@ IMAP 主机和端口默认是 `imap.qq.com:993`。`.env` 保存连接信息，`d
 2. **准备外币账户**：有美元消费时，为同一张卡准备 USD 账户；CNY 交易也需要对应 CNY 账户。程序不会在初次入账时自动换算币种。
 3. **创建待分类分类**：确保存在唯一且父子均可用的二级支出分类 `其他杂项 → 待分类`。即使使用纯规则模式也需要它；程序不会自动创建分类。
 
-然后编辑 [data/config.toml 的示例](config.example.toml)。不使用 AI 时，将文件顶层的配置改为：
+业务配置会在下一步首次执行 `./run migrate` 时自动创建为 `data/config.toml`，直接使用[程序内置默认值](src/ezbookkeeping_importer/config.toml)。本地源码、已安装的 `ebki` 和 Docker 均使用同一初始化逻辑；已有文件不覆盖。不使用 AI 时，在文件生成后、启动服务前将顶层配置改为：
 
 ```toml
 classification_mode = "rules_only"
 ```
 
-纯规则模式下，未命中商户规则的消费会进入「待分类」，后续可在 ezBookkeeping 调整。自定义商户规则、还款账户映射和生效日期的示例均在配置模板中。还款导入还需要确认渠道归属并设置 `repayment_ownership_confirmed = true`；保持默认 `false` 时，还款会等待处理，不影响正常消费导入。
+纯规则模式下，未命中商户规则的消费会进入「待分类」，后续可在 ezBookkeeping 调整。自定义商户规则、还款账户映射和生效日期的说明均在生成的配置注释中。还款导入还需要确认渠道归属并设置 `repayment_ownership_confirmed = true`；保持默认 `false` 时，还款会等待处理，不影响正常消费导入。
 
 保持 `[mail]` 中的 `source_id` 稳定，它用于识别同一逻辑邮箱的采集位置。
 
@@ -132,19 +130,20 @@ classification_mode = "rules_only"
 
 发布镜像地址为 `ghcr.io/wait9yan/ezbookkeeping-importer`。使用发布镜像的部署机器只需 Docker Compose，无需安装 Python、uv 或克隆源码。
 
-先阅读 [Releases](https://github.com/wait9yan/ezbookkeeping-importer/releases) 中的版本说明，再从对应版本标签的仓库复制 `compose.yaml`、`config.example.toml` 和 `.env.example` 到独立部署目录，并参考该版本的 `docs/operations.md`。首次填写配置：
+下面的自动生成配置流程适用于当前源码构建及包含此改动的后续发布镜像；已发布的 `0.1.0` 镜像仍需按该版本文档复制 `config.example.toml` 为 `data/config.toml`。本次改动尚未发布到 GHCR。
+
+先阅读 [Releases](https://github.com/wait9yan/ezbookkeeping-importer/releases) 中的版本说明，再从对应版本标签的仓库复制 `compose.yaml` 和 `.env.example` 到独立部署目录，并参考该版本的 `docs/operations.md`。首次准备服务连接：
 
 ```sh
 cp .env.example .env
 mkdir -p data
-cp config.example.toml data/config.toml
 ```
 
-按上面的步骤填写服务连接、业务配置，准备账户和分类。已有配置不要重复覆盖。生产 [compose.yaml](compose.yaml) 默认拉取预构建镜像 `latest`，该标签仅在正式版本发布时更新；需要固定版本或回退时，在 `.env` 设置 `EBKI_IMAGE` 为完整版本或 digest 引用。
+填写 `.env` 中的服务连接，准备账户和分类。镜像首次执行命令时会自动生成业务配置并继续运行，默认使用 AI 分类、上海时区、12:00 日期默认时间和 `qq-primary` 邮箱来源。个性化还款映射、商户规则或 `rules_only` 模式可在生成后编辑 `data/config.toml`；已有文件不会被覆盖。生产 [compose.yaml](compose.yaml) 默认拉取预构建镜像 `latest`，该标签仅在正式版本发布时更新；需要固定版本或回退时，在 `.env` 设置 `EBKI_IMAGE` 为完整版本或 digest 引用。
 
 Compose **只启动 importer**，连接现有外部网络 `ezbookkeeping`。请准备该网络，并确保 PostgreSQL 和 ezBookkeeping 可从容器访问；实际网络名不同时，修改 `networks.ezbookkeeping.name`。服务地址应填写容器能访问的主机名或 IP，容器内的 `127.0.0.1` 指向 importer 自己。
 
-容器使用 `10001:10001` 身份，统一将 `./data` 挂载到 `/app/data`，按需创建 `email`、`reports`、`logs` 子目录。宿主机需赋予 `data` 根目录及子目录写权限。Compose 仅挂载整个 `data` 目录，配置位于 `data/config.toml`，容器内为 `/app/data/config.toml`。首次启动前按上面的步骤复制示例配置；程序不会自动生成配置。配置随数据目录可写，部署前准备写权限：
+容器使用 `10001:10001` 身份，统一将 `./data` 挂载到 `/app/data`，按需创建 `email`、`reports`、`logs` 子目录。宿主机需赋予 `data` 根目录及子目录写权限。配置位于 `data/config.toml`，容器内为 `/app/data/config.toml`，在首次 `migrate`、`doctor` 或 `run` 时自动创建并持久保存。目录无写权限或已有配置非法时明确失败，不覆盖文件。部署前准备写权限：
 
 ```sh
 mkdir -p data
@@ -177,7 +176,7 @@ docker compose logs -f importer
 
 升级前执行 `docker compose pull importer` 拉取最新正式镜像，停止旧 worker，配对备份数据库、邮件和配置，确认版本兼容后再校验并执行 `docker compose up -d --no-build` 应用更新；仅拉取镜像不会更新正在运行的容器。复用原数据库和 `data/`，不要并行运行两个 worker。回退镜像不会撤销已写入 ezBookkeeping 的交易，操作步骤见[升级与回退](docs/operations.md#镜像升级与回退)。
 
-本地 `./run` 与 Docker 默认使用 `data/config.toml`，可通过 `--config` 显式指定其他文件。`.env` 和可分享的 `config.example.toml` 位于根目录。
+所有部署方式默认使用 `data/config.toml`，首次正式命令自动创建缺失的默认文件。可通过 `--config` 显式指定其他已准备好的文件，指定文件缺失时明确失败。`--help` 不创建配置。服务连接仍通过根目录 `.env` 或进程环境提供，不写入生成的 TOML。
 
 当前从源码构建时，准备上述配置、外部网络和数据目录后，显式使用构建覆盖文件：
 

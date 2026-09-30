@@ -9,6 +9,11 @@ import pytest
 from ezbookkeeping_importer.entrypoints import cli
 
 
+@pytest.fixture(autouse=True)
+def isolated_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+
 def snapshot():
     return {"snapshot_version": 1, "items": [{
         "issue": {"entity_type": "bank_transactions", "entity_id": "tx", "code": "duplicate_candidates",
