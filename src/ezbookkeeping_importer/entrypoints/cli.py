@@ -35,7 +35,7 @@ def calendar_date(value: str) -> date:
 def build_parser(*, interactive=False, parser_class=argparse.ArgumentParser):
     parser = parser_class(prog="ebki", description="银行邮件导入维护命令")
     if not interactive:
-        parser.add_argument("--config", default="config.toml")
+        parser.add_argument("--config", default="data/config.toml")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
     commands.add_parser("recheck", help="安排一次重复候选复查；通过正常检查后继续入账")

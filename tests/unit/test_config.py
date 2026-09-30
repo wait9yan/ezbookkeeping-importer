@@ -36,6 +36,64 @@ def environment(monkeypatch, values=ENV):
         monkeypatch.setenv(variable, value)
 
 
+@pytest.fixture
+def cli_configuration(config, monkeypatch):
+    monkeypatch.chdir(config.parent)
+    environment(monkeypatch, {"EBKI_DATABASE_URL": ENV["EBKI_DATABASE_URL"]})
+    loaded = []
+
+    def runtime(settings, **kwargs):
+        loaded.append(settings)
+        return SimpleNamespace(store=SimpleNamespace(migrate=lambda: None), close=lambda: None)
+
+    monkeypatch.setattr(cli, "Runtime", runtime)
+    return loaded
+
+
+@pytest.mark.parametrize("root_content", [BUSINESS.replace("synthetic", "old-root"), "invalid = ["])
+def test_cli_reads_default_data_configuration_only(cli_configuration, monkeypatch, root_content):
+    Path("data").mkdir()
+    Path("data/config.toml").write_text(BUSINESS.replace("synthetic", "data-source"))
+    Path("config.toml").write_text(root_content)
+    monkeypatch.setattr("sys.argv", ["ebki", "migrate"])
+
+    assert cli.main() == 0
+    assert len(cli_configuration) == 1
+    assert cli_configuration[0].mail.source_id == "data-source"
+
+
+@pytest.mark.parametrize("default_exists", [False, True])
+def test_cli_explicit_configuration_overrides_default(
+    cli_configuration, monkeypatch, default_exists
+):
+    if default_exists:
+        Path("data").mkdir()
+        Path("data/config.toml").write_text("invalid = [")
+    Path("chosen.toml").write_text(BUSINESS.replace("synthetic", "explicit-source"))
+    monkeypatch.setattr("sys.argv", ["ebki", "--config", "chosen.toml", "migrate"])
+
+    assert cli.main() == 0
+    assert len(cli_configuration) == 1
+    assert cli_configuration[0].mail.source_id == "explicit-source"
+
+
+def test_cli_missing_data_configuration_does_not_fall_back_to_root(
+    cli_configuration, monkeypatch, capsys
+):
+    import json
+
+    Path("config.toml").write_text(BUSINESS)
+    monkeypatch.setattr("sys.argv", ["ebki", "migrate"])
+
+    assert cli.main() == 1
+    assert cli_configuration == []
+    assert json.loads(capsys.readouterr().err) == {
+        "error_type": "ConfigurationError",
+        "message": "business configuration file cannot be read",
+    }
+    assert not Path("data/config.toml").exists()
+
+
 @pytest.mark.parametrize("log_level", [None, "WARNING"])
 def test_removed_environment_options_do_not_override_runtime_defaults(
     config, monkeypatch, log_level

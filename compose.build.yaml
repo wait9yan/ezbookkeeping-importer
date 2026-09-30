@@ -1,0 +1,6 @@
+# 显式使用：docker compose -f compose.yaml -f compose.build.yaml up -d --build
+services:
+  importer:
+    image: ezbookkeeping-importer:local
+    pull_policy: build
+    build: .

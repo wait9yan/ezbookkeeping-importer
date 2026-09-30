@@ -1,6 +1,6 @@
 # 配置文件
 # 本文件保存业务规则和日志级别；服务连接参数见 .env.example。
-# 本地启动使用 uv run --env-file .env ebki --config config.toml ...。
+# 复制到 data/config.toml；本地启动使用 ./run 或 uv run --env-file .env ebki ...。
 
 # 日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL；修改后重启进程。
 log_level = "INFO"
