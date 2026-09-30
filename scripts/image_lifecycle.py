@@ -66,6 +66,101 @@ def until(predicate, description, seconds=WAIT_SECONDS):
     raise TimeoutError(f'镜像生命周期验证超时：{description}')
 
 
+def verify_first_startup(docker, image, platform_args, network, mounts, database_url, name,
+                         *, legacy=False):
+    """独立数据卷及目标库直接默认run；真实分类HTTP与来源流水线完成后验证重启。"""
+    ledger = name + '-ledger'
+    fixture = ['--mount', f'type=bind,src={FIXTURE},dst=/smoke-fixture,readonly']
+    environment = {
+        **ENVIRONMENT, 'EBKI_DATABASE_URL': database_url,
+        'EBKI_LEDGER_URL': f'http://{ledger}:8080', 'EBKI_IMAP_HOST': 'imap.qq.com',
+        'EBKI_AI_URL': f'http://{ledger}:8080/v1', 'EBKI_AI_MODEL': 'synthetic-model',
+        'EBKI_AI_TOKEN': 'synthetic-ai-token', 'EBKI_SMOKE_MAIL': 'single',
+    }
+    env_args = [arg for k, v in environment.items() for arg in ('-e', f'{k}={v}')]
+    shared = [*platform_args, '--network', network, *mounts, *fixture, *env_args]
+    created = []
+
+    def python(code):
+        return docker('run', '--rm', *shared, '--user', '10001:10001', '--entrypoint',
+                      'python', image, '-c', code)
+
+    def control():
+        return json.loads(python('import urllib.request; '
+                                 f'print(urllib.request.urlopen({environment["EBKI_LEDGER_URL"]!r}'
+                                 '+"/control").read().decode())'))
+
+    def logs():
+        state = json.loads(docker('inspect', name))[0]['State']
+        output = docker('logs', name)
+        if not state['Running']:
+            raise AssertionError(f'默认启动意外退出：{output}')
+        return [json.loads(line) for line in output.splitlines() if line.strip()]
+
+    try:
+        docker('run', '-d', '--name', ledger, *platform_args, '--network', network,
+               *fixture, '--user', '10001:10001', '--entrypoint', 'python', image,
+               '/smoke-fixture/ledger_server.py')
+        created.append(ledger)
+        if legacy:
+            # 只通过已发布001建立旧库；禁止调用新版migrate预先升级。
+            python('import os; import psycopg; '
+                   'from ezbookkeeping_importer.adapters.persistence.postgres import SCHEMA; '
+                   'connection=psycopg.connect(os.environ["EBKI_DATABASE_URL"]); '
+                   'connection.execute(SCHEMA.read_text()); '
+                   'connection.execute("INSERT INTO email(id,raw_path,parse_status) "'
+                   '"VALUES (%s,%s,%s)", ("c"*64,"synthetic-preserved","ignored")); '
+                   'connection.commit(); connection.close()')
+        # 不设置--config、不传命令、不预生成配置，不调用migrate。
+        docker('run', '-d', '--name', name, *shared, image)
+        created.append(name)
+        until(lambda: any(e.get('event') == 'sync_completed' for e in logs()),
+              '默认AI配置首次同步完成')
+        until(lambda: control()['posts'] == 1, '合成邮件实际入账')
+        assert control()['classifications'] == 1
+        docker('exec', name, 'python', '-c', PROCESS_CHECK)
+        python('import json, os; from pathlib import Path; from importlib.resources import files; '
+               'from ezbookkeeping_importer.adapters.persistence.postgres import PostgresStore; '
+               'assert Path("/app/data/config.toml").read_bytes() == '
+               'files("ezbookkeeping_importer").joinpath("config.toml").read_bytes(); '
+               'store=PostgresStore(os.environ["EBKI_DATABASE_URL"]); '
+               'from ezbookkeeping_importer.adapters.persistence.migrations import load_migrations; '
+               'migrations=load_migrations(); '
+               'assert store.check_schema()==migrations[-1].version; '
+               'history=store.all("SELECT version,script_sha256 FROM schema_version ORDER BY version"); '
+               'assert [(r["version"],r["script_sha256"]) for r in history] == '
+               '[(m.version,m.checksum) for m in migrations]; '
+               'rows=store.all("SELECT * FROM bank_transactions"); '
+               'assert len(rows)==1 and rows[0]["import_status"]=="booked", rows; '
+               'assert store.one("SELECT * FROM email_source_item")["source_id"]=="qq-primary"; '
+               'assert store.one("SELECT * FROM email_source_item")["source_status"]=="verified"; '
+               'assert list(Path("/app/data/email").glob("*.eml")); '
+               + ('assert store.one("SELECT raw_path FROM email WHERE id=%s", ("c"*64,))'
+                  '["raw_path"]=="synthetic-preserved"; ' if legacy else '')
+               + 'store.close()')
+        initial_runs = sum(e.get('event') == 'worker_started' for e in logs())
+        docker('stop', name, timeout=25)
+        assert json.loads(docker('inspect', name))[0]['State']['ExitCode'] == 0
+        docker('start', name)
+        until(lambda: sum(e.get('event') == 'worker_started' for e in logs()) > initial_runs,
+              '初始化后重启')
+        until(lambda: sum(e.get('event') == 'sync_completed' for e in logs()) >= 2,
+              '重启后同步完成')
+        assert control()['posts'] == control()['classifications'] == 1
+        docker('stop', name, timeout=25)
+        assert json.loads(docker('inspect', name))[0]['State']['ExitCode'] == 0
+        print(('旧v1数据升级' if legacy else '缺库全新默认启动')
+              + '：内置AI配置、来源采集/解析/真实分类HTTP/入账、重启无重复通过', flush=True)
+    except Exception:
+        if name in created:
+            print('首次启动失败诊断：' + docker('logs', name), flush=True)
+            print('首次启动问题：' + docker('exec', name, 'ebki', 'issues'), flush=True)
+        raise
+    finally:
+        for container in reversed(created):
+            docker('rm', '-fv', container)
+
+
 def verify_lifecycle(docker, image, platform_args, network, mounts, database_url, name):
     metadata = json.loads(docker('image', 'inspect', image))[0]['Config']
     assert metadata['Entrypoint'] == ['ebki'], metadata['Entrypoint']

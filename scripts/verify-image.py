@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Support importlib-based unit tests as well as direct execution.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from image_lifecycle import verify_lifecycle  # noqa: E402
+from image_lifecycle import verify_first_startup, verify_lifecycle  # noqa: E402
 
 
 SMOKE_CONFIG = '''timezone = "Asia/Shanghai"
@@ -62,6 +62,7 @@ def verify(image: str, platform: str | None) -> None:
     volume_created = False
     network_created = False
     database_created = False
+    startup_volumes = []
     platform_args = ["--platform", platform] if platform else []
     mounts = ["--mount", f"type=volume,src={volume},dst=/app/data"]
     base = ["run", "--rm", *platform_args]
@@ -83,6 +84,23 @@ def verify(image: str, platform: str | None) -> None:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("隔离 PostgreSQL 未在 60 秒内就绪")
                 time.sleep(1)
+        # 首次启动场景使用独立空卷与缺失库，不能被下面的migrate维护验收预先准备。
+        for scenario in ('fresh', 'legacy'):
+            startup_volume = f'{name}-{scenario}'
+            docker('volume', 'create', startup_volume)
+            startup_volumes.append(startup_volume)
+            target = f'ebki_{scenario}'
+            exists = docker('exec', database, 'psql', '-U', 'postgres', '-Atc',
+                            f"SELECT count(*) FROM pg_database WHERE datname='{target}'")
+            assert exists == '0', exists
+            if scenario == 'legacy':
+                docker('exec', database, 'createdb', '-U', 'postgres', target)
+            verify_first_startup(
+                docker, image, platform_args, network,
+                ['--mount', f'type=volume,src={startup_volume},dst=/app/data'],
+                f'postgresql://postgres:{password}@{database}/{target}', f'{name}-{scenario}-app',
+                legacy=scenario == 'legacy',
+            )
         checks = '''
 import os
 from datetime import datetime, timedelta
@@ -204,6 +222,7 @@ for kind in ('email', 'reports', 'logs'):
             cleanup.append(("rm", "-fv", database))
         if volume_created:
             cleanup.append(("volume", "rm", volume))
+        cleanup.extend(('volume', 'rm', v) for v in startup_volumes)
         if network_created:
             cleanup.append(("network", "rm", network))
         for cleanup_command in cleanup:

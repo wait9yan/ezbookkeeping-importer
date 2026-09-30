@@ -10,6 +10,7 @@ class State:
         self.lock = threading.Lock()
         self.records = {}
         self.posts = 0
+        self.classifications = 0
         self.hold_reply = False
         self.release = threading.Event()
         self.release.set()
@@ -40,14 +41,17 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         if url.path == '/control':
             with state.lock:
-                result = {'posts': state.posts, 'records': list(state.records.values())}
+                result = {'posts': state.posts, 'classifications': state.classifications,
+                          'records': list(state.records.values())}
             self.reply(result)
             return
         if url.path == '/api/v1/accounts/list.json':
-            result = [{'id': '1', 'type': 1, 'currency': 'CNY', 'name': '测试账户'}]
+            result = [{'id': '1', 'type': 1, 'currency': 'CNY', 'name': '测试账户',
+                       'comment': '合成银行卡 6222000000001234'}]
         elif url.path == '/api/v1/transaction/categories/list.json':
             result = {'expense': [{'id': '10', 'type': 2, 'name': '其他杂项', 'subCategories': [
-                {'id': '11', 'type': 2, 'parentId': '10', 'name': '待分类'}]}]}
+                {'id': '11', 'type': 2, 'parentId': '10', 'name': '待分类'},
+                {'id': '12', 'type': 2, 'parentId': '10', 'name': '合成用途'}]}]}
         elif url.path == '/api/v1/transactions/list.json':
             keyword = query.get('keyword', [''])[0]
             with state.lock:
@@ -66,6 +70,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path == '/v1/chat/completions':
+            source = json.loads(body['messages'][1]['content'])
+            assert body['model'] == 'synthetic-model'
+            assert any(c['id'] == '12' for c in source['categories'])
+            with state.lock:
+                state.classifications += 1
+            decision = {'source_row_id': source['source_row_id'],
+                        'classification_status': 'matched', 'category_id': '12',
+                        'reason': '合成验收分类', 'evidence': [source['merchant']]}
+            self.reply({'choices': [{'finish_reason': 'stop',
+                                    'message': {'content': json.dumps(decision)}}]})
+            return
         if self.path == '/control':
             with state.lock:
                 state.hold_reply = body['hold_reply']

@@ -1,5 +1,6 @@
 """仅用于隔离镜像验收：空邮箱及确定性阻塞点，不修改业务状态机。"""
 import time
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,5 +36,10 @@ def controlled_create(self, payload):
     return original_create(self, payload)
 
 
-patch('ezbookkeeping_importer.bootstrap.MailClient', EmptyMailbox).start()
+if os.environ.get('EBKI_SMOKE_MAIL') == 'single':
+    from synthetic_mail import SingleMailbox
+
+    patch('ezbookkeeping_importer.bootstrap.MailClient', SingleMailbox).start()
+else:
+    patch('ezbookkeeping_importer.bootstrap.MailClient', EmptyMailbox).start()
 patch.object(EzBookkeepingClient, 'create', controlled_create).start()
