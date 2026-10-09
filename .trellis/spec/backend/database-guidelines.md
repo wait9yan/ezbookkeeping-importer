@@ -48,7 +48,7 @@ CREATE DATABASE 使用 psycopg.sql.Identifier；先读取服务器标识符字�
 - 来源项位置唯一键为 `(source_id, folder, uid_validity, uid)`；注册与扫描检查点同事务。固定首次上界 `initial_scan_upper_uid`，完成展示由上界内来源项派生，增量不能扩大首次范围。
 - `email.id` 是原件 SHA-256；邮件头 ID 为可空 `header_message_id`。来源认证及人工接纳仅在具体 `email_source_item`；email 不保存 parsed 业务副本。
 - `bank_report` 保存已接纳业务头和 content；规范化内容指纹包括控制总额，排除邮件头及 locator。`email(id,report_key)` 与 `bank_report(source_email_id,report_key)` 延迟复合 FK 验证配对。
-- `bank_transactions` 是日报/还款来源事实，月报行不生成交易；原币事实、当前决定、导入结果分别存储。交易经报告/行追溯 source_email_id，不建立交易证据表。
+- `bank_transactions` 是日报消费/退款来源事实，月报行不生成交易；原币事实、当前决定、导入结果分别存储。交易经报告/行追溯 source_email_id，不建立交易证据表。
 - ID 为 SHA-256(`report_key + ":" + report_row_key`) 前 12 原始字节的 Base64URL 无填充编码；两个键禁止冒号；marker 恒为 ebki- 加 16 字符 ID。
 - `background_task` 统一保存 sync/sync_range/create/settle_amount/settle_currency。`ledger_write_attempt` 记录发送前 unknown、确切请求和决定版本；恢复既有目标可以零尝试完成。
 - 核对完整集合、过期项清理、报告摘要及必要结算任务原子发布；网络期间不持锁，发布前重验完整输入和 reconciliation_version。
@@ -157,3 +157,26 @@ PG17/18派生签名再生成一致；旧库带数据、跨版本、新库结果�
 ### 7. 错误与正确
 
 错误：用 `set` 去重、全局忽略顺序、只比较对象名或为规避误报删库。正确：在共享提取器中只消除无结构意义的顺序，保留内容、数量和列顺序，继续严格验证。
+
+## 自动还款历史清理升级
+
+### 1. 范围与触发
+自动还款功能退出：删除 importer 还款通知及历史业务数据，收窄新类型；不修改 ezBookkeeping。已发布 SQL 字节保持不变，新增003增量迁移。
+
+### 2. 接口
+一次性 `scripts/purge-repayment-history.py --data-dir DIR` 仅使用 `EBKI_DATABASE_URL`，复用 PostgresStore 排他锁及 migrate。Docker 在 `/opt/ebki/maintenance/` 提供脚本。
+
+### 3. 契约
+清理工具持worker锁，先原子持久化最小文件清单，再迁移数据库，最后幂等删原件、受影响派生报告及可定位关联日志；成功删除临时清单，不增加永久历史兼容表。SQL清理覆盖无报告的失败通知、同报告多封来源、所有任务状态、尝试和关联核对；循环FK先解除email.report_key。月报还款事实与总额校验保留，statement核对一律out_of_scope。邮件位置检查点保留，新通知在正文下载前排除。
+
+### 4. 错误矩阵
+存在旧数据却未准备清单时普通迁移明确拒绝并提示升级工具；worker占锁拒绝升级；SQL失败回滚本版且不删原件；文件清理失败保留清单续跑。DB来源路径只可定位显式数据目录内文件，不能跟随symlink删除外部文件。未知配置字段不静默忽略。
+
+### 5. 案例
+正常：有旧还款任务的库经工具升级，远端转账不动，其他消费数据完整保留。基础：新库直接执行全链。错误：先删数据库再无清单寻找原件，或把unknown任务当未发送去操作远端。
+
+### 6. 验证
+真实隔离PG测试全部任务状态、循环FK、重复来源、无报告邮件、SQL回滚、迁移后清文件失败续跑、旧worker排他；新约束拒绝repayment。迁移签名由真实PG生成，契约资源测试和构建通过；采集测试证明还款通知不下载正文。
+
+### 7. 错误与正确
+错误：删除已发布001中的枚举或保留运行时还款处理来读历史。正确：003升级清除历史与依赖，运行时仅消费/退款；一次性清理工具不调用Ledger。

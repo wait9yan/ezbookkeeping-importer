@@ -15,6 +15,7 @@ from psycopg.conninfo import make_conninfo
 import pytest
 
 from ezbookkeeping_importer.adapters.persistence.postgres import PostgresStore
+from ezbookkeeping_importer.adapters.persistence.migrations import load_migrations
 from ezbookkeeping_importer.domain.errors import Conflict
 
 
@@ -34,6 +35,7 @@ def target_database():
 
 def test_concurrent_missing_database_creation_has_one_worker(target_database):
     admin, dsn, name = target_database
+    migrations = load_migrations()
     stores = []
     barrier = Barrier(2)
 
@@ -42,7 +44,7 @@ def test_concurrent_missing_database_creation_has_one_worker(target_database):
         stores.append(store)
         barrier.wait(timeout=5)
         try:
-            assert store.migrate(hold_worker=True) == 2
+            assert store.migrate(hold_worker=True) == migrations[-1].version
             return 'ready'
         except Conflict:
             return 'conflict'
@@ -51,7 +53,7 @@ def test_concurrent_missing_database_creation_has_one_worker(target_database):
         with ThreadPoolExecutor(max_workers=2) as pool:
             outcomes = list(pool.map(initialize, range(2)))
         assert sorted(outcomes) == ['conflict', 'ready']
-        assert stores[0].one('SELECT count(*) AS n FROM schema_version')['n'] == 2
+        assert stores[0].one('SELECT count(*) AS n FROM schema_version')['n'] == len(migrations)
         assert admin.execute('SELECT count(*) FROM pg_database WHERE datname=%s', (name,)).fetchone()[0] == 1
     finally:
         for store in stores:

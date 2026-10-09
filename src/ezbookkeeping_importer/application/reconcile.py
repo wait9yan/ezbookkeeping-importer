@@ -38,10 +38,6 @@ def merchant_identity(value: str) -> str:
 
 
 def match_key(row: dict) -> tuple:
-    if row["event_type"] == "repayment":
-        return ("repayment", row["occurred_date"], Decimal(row["original_amount"]))
-    if row["event_type"] == "statement" and "自动还款" in row["merchant_raw"]:
-        return ("repayment", row["occurred_date"], abs(Decimal(row["settlement_amount"])))
     return (
         row["event_type"],
         row["occurred_date"],
@@ -123,8 +119,6 @@ def compare_ledger(
     ):
         expected = Decimal(row["settlement_amount"])
         currency = row["settlement_currency"]
-        if transaction["event_type"] == "repayment":
-            expected = abs(expected)
     item.update(expected_amount=expected, expected_currency=currency)
     if not transaction["ledger_transaction_id"]:
         return None, None
@@ -168,22 +162,6 @@ def compare_ledger(
         }
     if not account or not recordable(account):
         differences["account_visibility"] = "missing or hidden account"
-    if payload["type"] == 4:
-        for field, expected_value in [
-            ("destinationAccountId", payload["destinationAccountId"]),
-            ("destinationAmount", cents(expected)),
-        ]:
-            if str(current.get(field)) != str(expected_value):
-                differences[field] = {"expected": expected_value, "actual": current.get(field)}
-        destination = account_map.get(str(current.get("destinationAccountId")))
-        if (
-            not destination
-            or not recordable(destination)
-            or destination.get("currency") != currency
-        ):
-            differences["destination_currency"] = (
-                "missing, hidden or incompatible destination account"
-            )
     item["details"]["differences"] = differences
     item["ledger_check_status"] = "mismatched" if differences else "matched"
     return current, accounts
@@ -252,7 +230,7 @@ def compute_results(
         raise ImporterError("statement row keys are not unique")
     index = candidate_index(transactions)
     candidate_map = {
-        row["row_key"]: [
+        row["row_key"]: [] if row["event_type"] == "statement" else [
             t
             for t in index.get(match_key(row), [])
             if row.get("original_currency") is None
@@ -268,7 +246,7 @@ def compute_results(
         candidates = candidate_map[row["row_key"]]
         transaction = None
         match_status = "missing_source_transaction"
-        if row["event_type"] == "statement" and "自动还款" not in row["merchant_raw"]:
+        if row["event_type"] == "statement":
             match_status = "out_of_scope"
         elif len(candidates) > 1 or len(candidates) == 1 and counts[candidates[0]["id"]] > 1:
             match_status = "ambiguous"

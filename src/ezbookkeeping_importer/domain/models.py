@@ -7,14 +7,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-MailKind = Literal["daily", "repayment", "monthly", "other", "unknown"]
+MailKind = Literal["daily", "monthly", "other", "unknown"]
 
 
 class SourceRow(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     row_key: str
-    event_type: Literal["expense", "refund", "repayment", "statement"]
+    event_type: Literal["expense", "refund", "statement"]
     occurred_date: date
     occurred_at: datetime | None
     time_precision: str

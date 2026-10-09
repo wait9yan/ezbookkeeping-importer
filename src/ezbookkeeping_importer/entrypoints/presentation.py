@@ -49,7 +49,6 @@ ISSUE_LABELS = {
     "invalid_template": "邮件模板异常",
     "empty_daily": "日报缺少交易明细",
     "invalid_daily_row": "日报交易行异常",
-    "repayment_state": "还款状态待确认",
     "invalid_monthly_row": "月账单行异常",
     "missing_control": "月账单缺少控制总额",
     "invalid_control": "月账单控制总额异常",
@@ -240,17 +239,13 @@ def _detail_fields(issue):
                 yield title, detail[key]
         differences = detail.get("differences") or {}
         for key, title in (("type", "交易类型"), ("time", "交易时间"),
-                           ("sourceAccountId", "账本账户"), ("currency", "币种"), ("amount", "金额"),
-                           ("destinationAccountId", "转入账户"),
-                           ("destinationAmount", "转入金额（分）")):
+                           ("sourceAccountId", "账本账户"), ("currency", "币种"), ("amount", "金额")):
             difference = differences.get(key)
             if isinstance(difference, dict):
                 yield title + "差异", (f"预期 {scalar(difference.get('expected'))} / "
                                        f"实际 {scalar(difference.get('actual'))}")
         if "account_visibility" in differences:
             yield "账户状态", "账本账户缺失或已隐藏"
-        if "destination_currency" in differences:
-            yield "转入账户状态", "转入账户缺失、已隐藏或币种不符"
     candidates = detail.get("candidate_ids")
     if isinstance(candidates, list):
         yield "候选数", len(candidates)
@@ -360,15 +355,6 @@ def comparison(console, data):
         source = accounts.get(str(row.get("sourceAccountId")), {})
         account = source.get("name", row.get("sourceAccountId"))
         amount += " " + str(source.get("currency", "币种未提供"))
-        if row.get("type") == 4:
-            destination = accounts.get(str(row.get("destinationAccountId")), {})
-            account = f"{account} → {destination.get('name', row.get('destinationAccountId'))}"
-            amount += (
-                " → "
-                + str(Decimal(str(row["destinationAmount"])) / 100)
-                + " "
-                + str(destination.get("currency", "币种未提供"))
-            )
         table.add_row(
             *[
                 Text(scalar(v))

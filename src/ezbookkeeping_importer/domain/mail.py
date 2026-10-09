@@ -5,7 +5,6 @@ from .models import MailKind
 
 BANK_SUBJECTS: dict[str, MailKind] = {
     "每日信用管家": "daily",
-    "自动还款扣款通知": "repayment",
     "招商银行信用卡电子账单": "monthly",
 }
 FORWARD_PREFIX = re.compile(r"^(?:fw|fwd|转发)\s*[:：]\s*", re.IGNORECASE)
@@ -20,6 +19,13 @@ def normalize_subject(subject: str) -> tuple[str, bool]:
     return normalized, forwarded
 
 
+def ignored_subject(subject: str) -> bool:
+    normalized, _ = normalize_subject(subject)
+    return normalized == "自动还款扣款通知"
+
+
 def bank_candidate(sender: str, subject: str) -> bool:
     normalized, _ = normalize_subject(subject)
+    if ignored_subject(subject):
+        return False
     return sender.lower().endswith("@message.cmbchina.com") or normalized in BANK_SUBJECTS

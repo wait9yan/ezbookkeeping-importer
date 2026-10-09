@@ -13,7 +13,7 @@ from ezbookkeeping_importer.domain.errors import DatabaseDiagnosticError
 
 def test_full_chain_matches_authoritative_sql_and_versioned_contracts():
     chain = migrations.load_migrations()
-    assert [step.version for step in chain] == [1, 2]
+    assert [step.version for step in chain] == [1, 2, 3]
     for step in chain:
         assert sha256(Path('migrations', step.name).read_bytes()).hexdigest() == step.checksum
         assert set(step.signature) == {'relations', 'types', 'routines', 'columns', 'constraints', 'indexes'}

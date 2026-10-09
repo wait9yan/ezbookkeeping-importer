@@ -117,37 +117,30 @@ def test_daily_unsupported_preauthorization_and_unknown_types_are_rejected(bank_
     assert result.issues[0].detail == "不支持的日报交易类型"
 
 
-def repayment(actual="8.00", state="我行已从您关联的自动还款账户中扣款"):
-    return mail(
-        "自动还款扣款通知",
-        f"<p>{state}</p><table><tr>"
-        + "".join(f"<td>{v}</td>" for v in ["扣款日期", "扣款币种", "应扣金额", "实扣金额"])
-        + "</tr><tr>"
-        + "".join(f"<td>{v}</td>" for v in ["2026年01月05日", "人民币", "10.00 元", actual + " 元"])
-        + "</tr></table>",
-    )
+@pytest.mark.parametrize("prefix", ["", " Fwd: ", "FW: 转发： "])
+def test_automatic_repayment_notice_is_outside_supported_mail(prefix):
+    from ezbookkeeping_importer.domain.mail import bank_candidate
+
+    subject = prefix + "自动还款扣款通知"
+    result = BankParser().parse(mail(subject, "<p>我行已从您关联的自动还款账户中扣款</p>"))
+    assert result.kind == "other"
+    assert not result.rows and not result.issues
+    assert not bank_candidate("ccsvc@message.cmbchina.com", subject)
+    assert not bank_candidate("friend@example.test", subject)
 
 
-def test_repayment_actual_partial_zero_and_unknown_state():
-    result = BankParser().parse(repayment())
-    assert not result.issues
-    assert result.rows[0].original_amount == Decimal("8.00")
-    assert result.rows[0].occurred_at is None
-    assert result.rows[0].card_reference is None
-    assert result.metadata["repayment_status"] == "partial"
-    zero = BankParser().parse(repayment("0.00"))
-    assert not zero.rows and not zero.issues
-    assert zero.metadata["repayment_status"] == "zero"
-    assert BankParser().parse(repayment("-1.00")).issues
-    assert BankParser().parse(repayment(state="将扣款")).issues
+def test_other_repayment_template_still_requires_explicit_review():
+    result = BankParser().parse(mail("新的还款账单模板", "<p>合成正文</p>"))
+    assert result.kind == "unknown"
+    assert result.issues[0].code == "unknown_template"
 
 
-def monthly(cells=None, controls=None):
+def monthly(cells=None, controls=None, group="消费"):
     cells = cells or ["", "1231", "0101", "合成商户", "¥ 72.00", "1234", "US", "10.00"]
     controls = controls or ["72", "0", "0", "72", "0", "0"]
     return mail(
         "招商银行信用卡电子账单",
-        '<p id="statementCycle">2025/12/18-2026/01/17</p><table><tr><td>消费</td></tr><tr>'
+        f'<p id="statementCycle">2025/12/18-2026/01/17</p><table><tr><td>{group}</td></tr><tr>'
         + "".join(f"<td>{v}</td>" for v in cells)
         + "</tr></table>"
         + "".join(
@@ -232,3 +225,14 @@ def test_explicit_full_card_field_is_preserved_for_exact_account_matching():
     )
     parsed = BankParser().parse(message.as_bytes())
     assert not parsed.issues and parsed.rows[0].card_reference == "4444333322221234"
+
+
+def test_monthly_repayment_remains_control_evidence_only():
+    cells = ["", "", "0105", "自动还款", "¥ -10.00", "1234", "CN", "-10.00"]
+    result = BankParser().parse(monthly(cells, ["0", "10", "10", "0", "0", "0"], "还款"))
+    assert not result.issues
+    assert result.rows[0].event_type == "statement"
+    assert result.rows[0].occurred_at is None
+    assert result.rows[0].settlement_amount == Decimal("-10.00")
+    invalid = BankParser().parse(monthly(cells, ["1", "10", "9", "0", "0", "0"], "还款"))
+    assert [issue.code for issue in invalid.issues] == ["control_mismatch"]

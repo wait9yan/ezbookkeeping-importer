@@ -31,5 +31,6 @@ COPY --from=builder /app/.venv /app/.venv
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/*
 COPY --chmod=755 docker/ebki /opt/ebki/bin/ebki
+COPY --chmod=755 scripts/purge-repayment-history.py /opt/ebki/maintenance/purge-repayment-history.py
 ENTRYPOINT ["ebki"]
 CMD ["run"]

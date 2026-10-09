@@ -2,7 +2,6 @@
 
 import os
 import tomllib
-from datetime import date, time
 from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any
@@ -44,15 +43,6 @@ class MailSettings(BusinessMailSettings):
         return value
 
 
-class RepaymentMapping(StrictModel):
-    source_account_id: str
-    destination_account_id: str
-    category_id: str
-    currency: str
-    valid_from: date
-    valid_until: date | None = None
-
-
 class Rule(StrictModel):
     merchant_pattern: str
     category_id: str
@@ -61,9 +51,7 @@ class Rule(StrictModel):
 class BusinessSettings(StrictModel):
     mail: BusinessMailSettings
     timezone: str
-    date_only_time: time | None = None
     log_level: str = "INFO"
-    repayments: tuple[RepaymentMapping, ...] = ()
     rules: tuple[Rule, ...] = ()
     classification_mode: str = "ai"
 

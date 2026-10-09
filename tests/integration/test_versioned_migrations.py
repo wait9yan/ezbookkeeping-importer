@@ -78,7 +78,7 @@ def synthetic_chain(store):
     migrations = list(load_migrations())
     namespace = store.one('SELECT current_schema() AS name')['name']
     with store.connection.transaction(force_rollback=True):
-        for version in (3, 4):
+        for version in (4, 5):
             script = f'ALTER TABLE email ADD COLUMN synthetic_v{version} text;'
             migration = Migration(version, f'{version:03d}_synthetic.sql', script,
                                   sha256(script.encode()).hexdigest(), {})
@@ -151,13 +151,13 @@ def test_cross_version_chain_preserves_data_and_finishes_same_contract(database,
     chain = synthetic_chain(database.store)
     old_baseline(database.store)
     monkeypatch.setattr(postgres, 'load_migrations', lambda: chain)
-    assert database.store.migrate() == 4
-    assert database.store.check_schema() == 4
+    assert database.store.migrate() == 5
+    assert database.store.check_schema() == 5
     assert database.store.one('SELECT raw_path FROM email')['raw_path'] == 'synthetic-preserved'
-    assert [row['version'] for row in history(database.store)] == [1, 2, 3, 4]
+    assert [row['version'] for row in history(database.store)] == [1, 2, 3, 4, 5]
     upgraded = database.store._schema_signature(database.store.one('SELECT current_schema() AS name')['name'])
     clear_schema(database.store)
-    assert database.store.migrate() == 4
+    assert database.store.migrate() == 5
     assert database.store._schema_signature(database.store.one('SELECT current_schema() AS name')['name']) == upgraded
 
 
@@ -169,10 +169,10 @@ def test_failed_version_rolls_back_only_itself_and_restart_continues(database, m
     stop = Event()
     timer = None
 
-    def fail_fourth(connection, migration, baseline):
+    def fail_fifth(connection, migration, baseline):
         nonlocal timer
         apply_migration(connection, migration, baseline)
-        if migration.version != 4:
+        if migration.version != 5:
             return
         if failure == 'sql':
             connection.execute('SELECT 1/0')
@@ -181,26 +181,26 @@ def test_failed_version_rolls_back_only_itself_and_restart_continues(database, m
             timer.start()
             connection.execute('SELECT pg_sleep(30)')
 
-    monkeypatch.setattr(postgres, 'apply_migration', fail_fourth)
+    monkeypatch.setattr(postgres, 'apply_migration', fail_fifth)
     try:
         with pytest.raises(StartupInterrupted if failure == 'stop' else DatabaseDiagnosticError):
             store.migrate(stop_event=stop)
     finally:
         if timer is not None:
             timer.join(timeout=2)
-    assert [row['version'] for row in history(store)] == [1, 2, 3]
+    assert [row['version'] for row in history(store)] == [1, 2, 3, 4]
     columns = store.all("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='email'")
-    assert 'synthetic_v3' in {row['column_name'] for row in columns}
-    assert 'synthetic_v4' not in {row['column_name'] for row in columns}
+    assert 'synthetic_v4' in {row['column_name'] for row in columns}
+    assert 'synthetic_v5' not in {row['column_name'] for row in columns}
     committed = history(store)
     competitor = database.connect()
     assert competitor.lock_worker()
     competitor.unlock_worker()
     stop.clear()
     monkeypatch.setattr(postgres, 'apply_migration', apply_migration)
-    assert store.migrate(stop_event=stop) == 4
-    assert history(store)[:3] == committed
-    assert store.check_schema() == 4
+    assert store.migrate(stop_event=stop) == 5
+    assert history(store)[:4] == committed
+    assert store.check_schema() == 5
 
 
 def test_first_version_signature_failure_rolls_back_tables_and_history(database, monkeypatch):
@@ -241,7 +241,7 @@ def test_real_process_signal_rolls_back_current_version_and_releases_lock(databa
     chain = synthetic_chain(database.store)
     manifest = tmp_path / 'synthetic-chain.json'
     manifest.write_text(json.dumps([asdict(migration) for migration in chain]))
-    marker = tmp_path / 'fourth-version-in-progress'
+    marker = tmp_path / 'fifth-version-in-progress'
     child_code = '''
 import json, os, signal, sys
 from pathlib import Path
@@ -253,12 +253,12 @@ stop = Event()
 signal.signal(signal.SIGTERM, lambda *args: stop.set())
 chain = tuple(Migration(**item) for item in json.loads(Path(sys.argv[1]).read_text()))
 postgres.load_migrations = lambda: chain
-def pause_fourth(connection, migration, baseline):
+def pause_fifth(connection, migration, baseline):
     apply_migration(connection, migration, baseline)
-    if migration.version == 4:
+    if migration.version == 5:
         Path(sys.argv[2]).write_text(str(connection.info.backend_pid))
         connection.execute('SELECT pg_sleep(2)')
-postgres.apply_migration = pause_fourth
+postgres.apply_migration = pause_fifth
 store = postgres.PostgresStore(os.environ['EBKI_TEST_DATABASE_URL'])
 try:
     store.migrate(stop_event=stop)
@@ -274,7 +274,7 @@ finally:
         deadline = time.monotonic() + 5
         while not marker.exists() or not marker.stat().st_size:
             if process.poll() is not None or time.monotonic() > deadline:
-                raise AssertionError('隔离迁移进程未进入第四版本事务')
+                raise AssertionError('隔离迁移进程未进入第五版本事务')
             time.sleep(0.02)
         backend = int(marker.read_text())
         while True:
@@ -294,7 +294,7 @@ finally:
         if process.poll() is None:
             process.kill()
             process.communicate(timeout=5)
-    assert [row['version'] for row in history(database.store)] == [1, 2, 3]
+    assert [row['version'] for row in history(database.store)] == [1, 2, 3, 4]
     competitor = database.connect()
     # SIGKILL closes the client; the server notices disconnect at its next query boundary.
     deadline = time.monotonic() + 5
@@ -303,8 +303,8 @@ finally:
         time.sleep(0.02)
     competitor.unlock_worker()
     monkeypatch.setattr(postgres, 'load_migrations', lambda: chain)
-    assert database.store.migrate() == 4
-    assert database.store.check_schema() == 4
+    assert database.store.migrate() == 5
+    assert database.store.check_schema() == 5
 
 
 def test_latest_database_low_privilege_migrate_and_doctor_are_read_only(database, monkeypatch):

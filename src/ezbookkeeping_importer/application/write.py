@@ -19,8 +19,6 @@ def matches(current: dict | None, payload: dict) -> bool:
     if not current:
         return False
     fields = ["type", "sourceAccountId", "sourceAmount"]
-    if payload["type"] == 4:
-        fields += ["destinationAccountId", "destinationAmount"]
     return all(str(current.get(key)) == str(payload.get(key)) for key in fields)
 
 

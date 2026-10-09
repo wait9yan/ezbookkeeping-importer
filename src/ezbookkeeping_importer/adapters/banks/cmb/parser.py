@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 
 from ezbookkeeping_importer.domain.models import MailKind, ParsedMail, ParseIssue, SourceRow
-from ezbookkeeping_importer.domain.mail import BANK_SUBJECTS, normalize_subject
+from ezbookkeeping_importer.domain.mail import BANK_SUBJECTS, ignored_subject, normalize_subject
 
 PARSER_VERSION = "cmb-1"
 DAILY_ANCHOR = re.compile(r"^(\d{4}/\d{2}/\d{2})\s*您的消费明细如下[：:]$")
@@ -111,7 +111,9 @@ class BankParser:
         rows = []
         report_date = None
         if kind == "other":
-            if any(term in subject for term in ("账单", "信用管家", "还款", "消费提醒")):
+            if not ignored_subject(subject) and any(
+                term in subject for term in ("账单", "信用管家", "还款", "消费提醒")
+            ):
                 kind = "unknown"
                 issues.append(_issue("unknown_template", "subject", "疑似账务邮件主题未支持"))
         elif len(parts) != 1:
@@ -127,8 +129,6 @@ class BankParser:
                     node.decompose()
                 if kind == "daily":
                     report_date, rows, issues, extra = self._daily(soup)
-                elif kind == "repayment":
-                    report_date, rows, issues, extra = self._repayment(soup)
                 else:
                     report_date, rows, issues, extra = self._monthly(soup)
                 metadata.update(extra)
@@ -218,49 +218,6 @@ class BankParser:
             except ValueError as exc:
                 issues.append(_issue("invalid_daily_row", locator, str(exc)))
         return report_date, rows, issues, {}
-
-    def _repayment(self, soup):
-        text = "".join(soup.stripped_strings)
-        if "我行已从您关联的自动还款账户中扣款" not in text:
-            return None, [], [_issue("repayment_state", "body", "未识别到已实际扣款的状态")], {}
-        tokens = [" ".join(s.split()) for s in soup.stripped_strings]
-        header = ["扣款日期", "扣款币种", "应扣金额", "实扣金额"]
-        matches = [i for i in range(len(tokens)) if tokens[i : i + 4] == header]
-        if len(matches) != 1:
-            raise ValueError("还款四列表头缺失或不唯一")
-        tail = tokens[matches[0] + 4 :]
-        if sum(bool(re.fullmatch(r"\d{4}年\d{2}月\d{2}日", token)) for token in tail) != 1:
-            raise ValueError("还款明细日期缺失或出现多个明细，需核实模板")
-        fields = tail[:4]
-        if len(fields) != 4:
-            raise ValueError("还款明细字段缺失")
-        day = datetime.strptime(fields[0], "%Y年%m月%d日").date()
-        currency = {"人民币": "CNY"}.get(fields[1])
-        if currency is None:
-            raise ValueError("尚未支持的还款币种")
-        due, actual = _money(fields[2]), _money(fields[3])
-        if due < 0 or actual < 0:
-            raise ValueError("还款金额不可为负")
-        metadata = {
-            "due_amount": str(due),
-            "actual_amount": str(actual),
-            "repayment_status": "zero" if actual == 0 else "partial" if actual < due else "paid",
-        }
-        if actual == 0:
-            return day, [], [], metadata
-        row = dict(
-            event_type="repayment",
-            occurred_date=day,
-            occurred_at=None,
-            time_precision="date",
-            card_reference=None,
-            merchant_raw="自动还款",
-            original_amount=actual,
-            original_currency=currency,
-            evidence={"locator": "repayment:1", "fields": fields},
-            extra=metadata,
-        )
-        return day, [row], [], metadata
 
     def _monthly(self, soup):
         cycle = soup.find(id="statementCycle")

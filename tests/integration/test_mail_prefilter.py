@@ -140,3 +140,22 @@ def test_ignored_uid_is_rechecked_when_uidvalidity_changes(database, tmp_path, s
         store.one("SELECT status FROM email_source_item WHERE uid_validity='new'")["status"]
         == "collected"
     )
+
+
+def test_repayment_notices_are_skipped_without_downloading_body(database, tmp_path, settings):
+    store = database.store
+    mail = HeaderMail(database.connect(), {"INBOX": ("v1", {
+        1: raw_message("ccsvc@message.cmbchina.com", "自动还款扣款通知"),
+        2: raw_message("friend@example.test", "Fwd: 转发： 自动还款扣款通知"),
+    })})
+    evidence = EvidenceStore(tmp_path / "evidence")
+    collect(store, mail, evidence, settings)
+    assert mail.headers == [("INBOX", 1), ("INBOX", 2)]
+    assert not mail.fetches
+    assert store.one("SELECT count(*) AS n FROM email")["n"] == 0
+    assert store.one("SELECT count(*) AS n FROM bank_report")["n"] == 0
+    assert store.one("SELECT count(*) AS n FROM bank_transactions")["n"] == 0
+    assert store.one("SELECT count(*) AS n FROM email_source_item WHERE status='skipped'")["n"] == 2
+    assert not list((tmp_path / "evidence").rglob("*.eml"))
+    collect(store, mail, evidence, settings)
+    assert not mail.fetches and len(mail.headers) == 2

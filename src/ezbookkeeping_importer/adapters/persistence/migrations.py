@@ -78,9 +78,17 @@ def load_migrations() -> tuple[Migration, ...]:
 
 
 def apply_migration(connection, migration: Migration, baseline_checksum: str):
+    import psycopg
+
     connection.execute("SELECT set_config('ebki.migration_baseline_sha256',%s,true)",
                        (baseline_checksum,))
-    connection.execute(migration.script)
+    try:
+        connection.execute(migration.script)
+    except psycopg.Error as exc:
+        if exc.sqlstate == "P0004" and migration.version == 3:
+            raise schema_error("repayment_cleanup_required",
+                               "先停止 worker，并运行 scripts/purge-repayment-history.py --data-dir DATA；旧还款文件定位尚未持久化，未删除数据。") from None
+        raise
     # Published 001 owns the original version row. Subsequent history is engine-owned.
     if migration.version > 1:
         connection.execute('INSERT INTO schema_version(version,script_sha256) VALUES (%s,%s)',

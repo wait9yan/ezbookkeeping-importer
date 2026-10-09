@@ -1,7 +1,6 @@
 """统一 CLI 首次生成、严格已有文件及原子并发发布契约。"""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import time
 import errno
 import json
 import os
@@ -63,11 +62,10 @@ def test_first_cli_command_uses_published_business_defaults(command_environment,
     assert Path(cli.DEFAULT_CONFIG_PATH).read_bytes() == initialization.DEFAULT_CONFIG_RESOURCE.read_bytes()
     settings = command_environment[0]
     assert settings.timezone == "Asia/Shanghai"
-    assert settings.date_only_time == time(12)
     assert settings.classification_mode == "ai"
     assert settings.mail.source_id == "qq-primary"
     assert settings.mail.rescan_days == 7
-    assert settings.repayments == settings.rules == ()
+    assert settings.rules == ()
     assert settings.log_level == "INFO"
     assert not list(Path("data").glob(".config-*.tmp"))
     for value in ENVIRONMENT.values():

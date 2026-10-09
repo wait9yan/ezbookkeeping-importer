@@ -152,23 +152,6 @@ def test_terminal_control_characters_are_not_emitted():
     assert "商户�[31m危险��" in value
 
 
-def test_repayment_reconciliation_details_explain_destination_differences():
-    items = [issue("reconciliation", entity="bank_statement_reconciliation", state=None, detail={
-        "match_status": "matched", "ledger_check_status": "mismatched", "details": {
-            "differences": {
-                "destinationAccountId": {"expected": "card-account", "actual": "other-account"},
-                "destinationAmount": {"expected": 1234, "actual": 4321},
-                "destination_currency": "missing, hidden or incompatible destination account",
-            },
-        },
-    })]
-    value = render("issues", items, args=Namespace(entity_type=None, entity_id="tx-1"))
-    for expected in ("转入账户差异", "预期 card-account / 实际 other-account",
-                     "转入金额（分）差异", "预期 1234 / 实际 4321",
-                     "转入账户缺失、已隐藏或币种不符"):
-        assert "".join(expected.split()) in "".join(value.split())
-
-
 @pytest.mark.parametrize("queued,expected", [(True, "已排队"), (False, "已合并")])
 def test_sync_reports_scheduling_and_optional_range(queued, expected):
     value = render("sync", {"queued": queued, "since": date(2026, 9, 1), "until": None})
@@ -201,7 +184,7 @@ def test_resolve_reports_decision_and_unknown_intent_separately():
 
 
 
-def test_comparison_displays_transfer_currency_and_missing_target():
+def test_comparison_displays_expense_currency_and_missing_target():
     stream = StringIO()
     screen = Console(file=stream, width=120, color_system=None)
     presentation.comparison(
@@ -209,16 +192,13 @@ def test_comparison_displays_transfer_currency_and_missing_target():
         {
             "accounts": [
                 {"id": "a", "name": "人民币", "currency": "CNY"},
-                {"id": "b", "name": "美元", "currency": "USD"},
             ],
-            "categories": [{"id": "c", "path": "其他 → 转账"}],
+            "categories": [{"id": "c", "path": "其他 → 消费"}],
             "decision": {
                 "payload": {
-                    "type": 4,
+                    "type": 3,
                     "sourceAccountId": "a",
-                    "destinationAccountId": "b",
                     "sourceAmount": 12300,
-                    "destinationAmount": 1700,
                     "categoryId": "c",
                 }
             },
@@ -226,6 +206,6 @@ def test_comparison_displays_transfer_currency_and_missing_target():
         },
     )
     value = stream.getvalue()
-    assert "123 CNY" in value and "17 USD" in value
-    assert "远端已不存在" in value and "其他 → 转账" in value
+    assert "123 CNY" in value
+    assert "远端已不存在" in value and "其他 → 消费" in value
     assert "\x1b" not in value

@@ -157,24 +157,14 @@ def test_mail_connection_fields_are_not_business_toml(config, monkeypatch, field
 
 
 def test_current_business_fields_survive_environment_assembly(config, monkeypatch):
-    from datetime import date, time
-
     environment(monkeypatch)
     config.write_text(
-        'date_only_time = 12:34:56\n'
         'log_level = "debug"\n' + BUSINESS + 'rescan_days = 14\n'
-        '[[repayments]]\nsource_account_id = "source"\ndestination_account_id = "destination"\n'
-        'category_id = "repayment"\ncurrency = "CNY"\nvalid_from = 2026-01-01\n'
-        'valid_until = 2026-12-31\n[[rules]]\nmerchant_pattern = "synthetic"\n'
-        'category_id = "expense"\n'
+        '[[rules]]\nmerchant_pattern = "synthetic"\ncategory_id = "expense"\n'
     )
     settings = load_settings(str(config))
-    assert settings.date_only_time == time(12, 34, 56)
     assert settings.log_level == "DEBUG"
     assert settings.mail.source_id == "synthetic" and settings.mail.rescan_days == 14
-    assert settings.repayments[0].valid_from == date(2026, 1, 1)
-    assert settings.repayments[0].valid_until == date(2026, 12, 31)
-    assert settings.repayments[0].destination_account_id == "destination"
     assert settings.rules[0].category_id == "expense"
 
 
@@ -303,9 +293,6 @@ def test_unknown_toml_key_is_an_error_and_never_displays_value(config, monkeypat
         ('misspelled = "SECRET_VALUE"\n', "mail.misspelled"),
         ('[[rules]]\nmerchant_pattern="test"\ncategory_id="category"\n'
          'misspelled="SECRET_VALUE"\n', "rules.0.misspelled"),
-        ('[[repayments]]\nsource_account_id="source"\ndestination_account_id="destination"\n'
-         'category_id="category"\ncurrency="CNY"\nvalid_from=2026-01-01\n'
-         'misspelled="SECRET_VALUE"\n', "repayments.0.misspelled"),
     ],
 )
 def test_nested_business_tables_reject_unknown_fields(config, monkeypatch, suffix, field):
@@ -692,3 +679,11 @@ def test_removed_repayment_confirmation_is_rejected(config, monkeypatch, value):
     config.write_text(f"repayment_ownership_confirmed = {value}\n" + BUSINESS)
     with pytest.raises(ConfigurationError, match="repayment_ownership_confirmed: unknown TOML field"):
         load_settings(str(config), command="status")
+
+
+@pytest.mark.parametrize("field,value", [("repayments", "[]"), ("date_only_time", '"12:00:00"')])
+def test_removed_repayment_settings_are_rejected(config, monkeypatch, field, value):
+    environment(monkeypatch)
+    config.write_text(f"{field} = {value}\n" + BUSINESS)
+    with pytest.raises(ConfigurationError, match=f"{field}: unknown TOML field"):
+        load_settings(str(config))

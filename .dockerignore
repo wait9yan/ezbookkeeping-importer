@@ -11,3 +11,5 @@ src/**/*.pyc
 !docker/
 !docker/ebki
 !hatch_build.py
+!scripts/
+!scripts/purge-repayment-history.py

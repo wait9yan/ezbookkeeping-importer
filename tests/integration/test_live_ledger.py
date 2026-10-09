@@ -24,7 +24,7 @@ def live_ledger():
         client.close()
 
 
-def test_live_create_refund_transfer_and_settlement(live_ledger):
+def test_live_create_refund_and_settlement(live_ledger):
     ledger, context = live_ledger
     source_marker = "ebki-" + str(uuid.uuid4())
     timestamp = int(time.time()) - 60
@@ -68,21 +68,7 @@ def test_live_create_refund_transfer_and_settlement(live_ledger):
         }
     )
     assert ledger.get(refund["id"])["sourceAmount"] == -99
-    transfer = ledger.create(
-        {
-            **base,
-            "type": 4,
-            "categoryId": context["categories"][1]["id"],
-            "sourceAccountId": context["accounts"][1]["id"],
-            "destinationAccountId": context["accounts"][0]["id"],
-            "sourceAmount": 1000,
-            "destinationAmount": 1000,
-            "comment": source_marker + " transfer",
-            "clientSessionId": str(uuid.uuid4()),
-        }
-    )
-    assert ledger.get(transfer["id"])["type"] == 4
-    assert len(ledger.search(timestamp, timestamp, source_marker)) == 3
+    assert len(ledger.search(timestamp, timestamp, source_marker)) == 2
     assert ledger.get("1") is None
 
 

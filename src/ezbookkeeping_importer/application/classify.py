@@ -1,7 +1,7 @@
 import re
 import logging
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -12,10 +12,6 @@ from .ports import Classifier, Ledger, Store
 from .records import source_row
 from .recheck import is_duplicate_recheck
 from .events import emit, blocked, Progress, failure_fields
-
-
-def effective(mapping, day: date) -> bool:
-    return mapping.valid_from <= day and (mapping.valid_until is None or day <= mapping.valid_until)
 
 
 def category_valid(category: dict, category_type: int) -> bool:
@@ -47,7 +43,7 @@ def validate_target(ledger: Ledger, payload: dict, currency: str):
     validate_accounts(ledger, payload, currency)
     categories = {str(c["id"]): c for c in ledger.categories()}
     category = categories.get(str(payload["categoryId"]))
-    if not category or not category_valid(category, 3 if payload["type"] == 4 else 2):
+    if not category or not category_valid(category, 2):
         raise ImporterError("category missing, hidden or incompatible")
 
 
@@ -96,28 +92,12 @@ def classify_expense(transaction: dict, settings, ledger: Ledger, ai: Classifier
     return category_id, classification
 
 
-def repayment_mapping(facts: dict, settings):
-    day = date.fromisoformat(facts["occurred_date"])
-    mappings = [
-        m
-        for m in settings.repayments
-        if m.currency == facts["original_currency"] and effective(m, day)
-    ]
-    if len(mappings) != 1:
-        raise ImporterError("repayment requires one effective account mapping")
-    return mappings[0]
-
-
 def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -> dict:
     facts = source_row(transaction)
     event = facts["event_type"]
-    day = date.fromisoformat(facts["occurred_date"])
-    if facts["occurred_at"]:
-        instant = datetime.fromisoformat(facts["occurred_at"])
-    elif settings.date_only_time:
-        instant = datetime.combine(day, settings.date_only_time, ZoneInfo(settings.timezone))
-    else:
-        raise ImporterError("date_only_time requires an explicit bookkeeping convention")
+    if not facts["occurred_at"]:
+        raise ImporterError("source transaction requires an exact occurrence time")
+    instant = datetime.fromisoformat(facts["occurred_at"])
     if instant.tzinfo is None:
         raise ImporterError("source time must have configured timezone")
     utc_offset = instant.utcoffset()
@@ -128,21 +108,7 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
     currency = facts["original_currency"]
     account_audit = None
     classification = None
-    if event == "repayment":
-        if currency != "CNY" or amount <= 0:
-            raise ImporterError(
-                "repayment requires one effective CNY account pair and positive amount"
-            )
-        mapping = repayment_mapping(facts, settings)
-        payload = {
-            "type": 4,
-            "sourceAccountId": mapping.source_account_id,
-            "destinationAccountId": mapping.destination_account_id,
-            "categoryId": mapping.category_id,
-            "sourceAmount": cents(amount),
-            "destinationAmount": cents(amount),
-        }
-    elif event in {"expense", "refund"}:
+    if event in {"expense", "refund"}:
         if (event == "expense" and amount <= 0) or (event == "refund" and amount >= 0):
             raise ImporterError("event sign contradicts bank evidence")
         if currency not in {"CNY", "USD"}:
@@ -162,8 +128,6 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
         raise ImporterError("unsupported event type")
     source_marker = transaction["source_marker"]
     detail = facts["merchant_raw"]
-    if facts["time_precision"] != "second":
-        detail += " 来源仅提供日期"
     payload.update(
         {
             "time": int(instant.timestamp()),
@@ -187,12 +151,8 @@ def refresh_classification(
 ) -> dict:
     saved = transaction["import_decision"]
     payload = dict(saved["payload"])
-    if payload["type"] == 3:
-        category_id, classification = classify_expense(transaction, settings, ledger, ai)
-        payload["categoryId"] = category_id
-    else:
-        payload["categoryId"] = repayment_mapping(source_row(transaction), settings).category_id
-        classification = saved.get("classification")
+    category_id, classification = classify_expense(transaction, settings, ledger, ai)
+    payload["categoryId"] = category_id
     validate_target(ledger, payload, decision_currency(transaction))
     # A retry refreshes only category choice. The previously persisted amount, quote,
     # time, source source_marker and any manually corrected account remain authoritative.
