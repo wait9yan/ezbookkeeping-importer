@@ -681,7 +681,7 @@ def test_removed_repayment_confirmation_is_rejected(config, monkeypatch, value):
         load_settings(str(config), command="status")
 
 
-@pytest.mark.parametrize("field,value", [("repayments", "[]"), ("date_only_time", '"12:00:00"')])
+@pytest.mark.parametrize("field,value", [("repayments", "[]")])
 def test_removed_repayment_settings_are_rejected(config, monkeypatch, field, value):
     environment(monkeypatch)
     config.write_text(f"{field} = {value}\n" + BUSINESS)

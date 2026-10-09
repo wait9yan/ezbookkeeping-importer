@@ -5,6 +5,7 @@ from ..domain.identity import content_fingerprint, transaction_id
 from ..domain.errors import ImporterError, LogPersistenceError
 from .ports import Store
 from .records import trusted_source
+from .sources import lock_source, register_sources, accept_daily
 from .events import emit, blocked, Progress, failure_fields
 
 
@@ -40,6 +41,7 @@ def _parse_one(store, parser, message, header_issues, parser_version):
         transaction_id(result.report_key, key)
     created = 0
     with store.transaction():
+        lock_source(store, parser.context)
         if not _message_unchanged(store, message):
             return "superseded", {}
         store.execute(
@@ -114,6 +116,8 @@ def _parse_one(store, parser, message, header_issues, parser_version):
         store.execute(
             "UPDATE email SET report_key=%s WHERE id=%s", (result.report_key, message["id"])
         )
+        report = store.one("SELECT * FROM bank_report WHERE report_key=%s", (result.report_key,))
+        register_sources(store, report)
         if result.kind == "monthly":
             return "accepted", {
                 "report_key": result.report_key,
@@ -121,33 +125,7 @@ def _parse_one(store, parser, message, header_issues, parser_version):
                 "row_count": len(result.rows),
                 "created_transaction_count": 0,
             }
-        for row in result.rows:
-            tid = transaction_id(result.report_key, row.row_key)
-            inserted = store.execute(
-                """INSERT INTO bank_transactions(id,report_key,report_row_key,event_type,
-                occurred_date,occurred_at,time_precision,merchant_name,card_reference,original_amount,
-                original_currency,posted_date,bank_settlement_amount,bank_settlement_currency,source_details)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(report_key,report_row_key) DO NOTHING""",
-                (
-                    tid,
-                    result.report_key,
-                    row.row_key,
-                    row.event_type,
-                    row.occurred_date,
-                    row.occurred_at,
-                    row.time_precision,
-                    row.merchant_raw,
-                    row.card_reference,
-                    row.original_amount,
-                    row.original_currency,
-                    row.posted_date,
-                    row.settlement_amount,
-                    row.settlement_currency,
-                    row.extra,
-                ),
-            )
-            created += inserted.rowcount
+        created = accept_daily(store, report)
     return "accepted", {
         "report_key": result.report_key,
         "report_type": result.kind,

@@ -55,7 +55,17 @@ def issues(store, entity_type=None, entity_id=None):
     for row in store.all("""SELECT * FROM bank_statement_reconciliation WHERE
         match_status IN ('missing_source_transaction','missing_statement_evidence','ambiguous')
         OR ledger_check_status IN ('mismatched','target_missing','query_failed','not_comparable')"""):
+        if row["bank_transaction_id"] is None and store.one(
+            "SELECT 1 FROM transaction_source WHERE report_key=%s AND row_key=%s",
+            (row["statement_report_key"], row["statement_row_key"]),
+        ):
+            continue
         add("bank_statement_reconciliation", row, "reconciliation", row)
+    from .source_issues import source_issues
+
+    result.extend(item for item in source_issues(store)
+                  if (entity_type is None or entity_type == "transaction_source")
+                  and (entity_id is None or str(entity_id) == item["entity_id"]))
     return result
 
 
@@ -128,6 +138,11 @@ def status(store):
         "email": store.all("SELECT parse_status,count(*) FROM email GROUP BY parse_status"),
         "bank_transactions": store.all(
             "SELECT import_status,count(*) FROM bank_transactions GROUP BY import_status"
+        ),
+        "transaction_source": store.all(
+            """SELECT CASE WHEN transaction_id IS NOT NULL THEN 'associated'
+            WHEN last_resolution->>'action'='ignore' THEN 'ignored' ELSE 'unassociated' END AS status,
+            count(*) FROM transaction_source GROUP BY 1"""
         ),
         "background_task": store.all(
             "SELECT task_type,status,count(*) FROM background_task GROUP BY task_type,status"

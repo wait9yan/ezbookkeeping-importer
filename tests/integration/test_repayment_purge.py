@@ -78,7 +78,7 @@ def test_purge_deletes_all_local_history_and_preserves_monthly(database, tmp_pat
     assert not list((root / 'reports').iterdir())
     assert (root / 'logs' / 'worker.jsonl').read_text() == '{"event": "worker_started"}\n'
     assert not (root / purge_module.MANIFEST).exists()
-    assert store.check_schema() == 3
+    assert store.check_schema() == load_migrations()[-1].version
     with pytest.raises(psycopg.errors.CheckViolation):
         store.execute("UPDATE bank_report SET report_type='repayment'")
     # A successful repeat neither recreates history nor changes retained month facts.
@@ -94,7 +94,7 @@ def test_purge_resume_after_database_commit(database, tmp_path, monkeypatch):
         purge_module.purge(database.store, root)
     manifest = root / purge_module.MANIFEST
     assert manifest.stat().st_mode & 0o777 == 0o600
-    assert database.store.check_schema() == 3
+    assert database.store.check_schema() == load_migrations()[-1].version
     assert (root / 'email' / ('1'*64+'.eml')).exists()
     monkeypatch.setattr(purge_module, 'clean_files', clean)
     purge_module.purge(database.store, root)

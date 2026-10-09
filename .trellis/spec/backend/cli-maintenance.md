@@ -10,7 +10,7 @@
 - `ebki issues [--entity-type TYPE] [--entity-id ID] [--code CODE] [--status STATUS] [--snapshot-out FILE]`：当前诊断列表，导出固定集合。
 - `ebki issues show --entity-type TYPE --entity-id ID [--code CODE]`：完整详情、动作与前置快照；多诊断全部可见。
 - `ebki issues candidates --snapshot FILE [--target-id ID]`：单项候选账单、账户与分类查询。
-- `ebki issues resolve --snapshot FILE --action ACTION --reason TEXT [--target-id ID] [--account-id ID]`：单项人工决定。
+- `ebki issues resolve --snapshot FILE --action ACTION --reason TEXT [--target-id ID | --transaction-id ID] [--account-id ID]`：单项人工决定。
 - `ebki recheck --snapshot FILE`：仅复查固定快照集合；无参数recheck明确表示执行时全局符合条件的对象。
 - FILE可为`-`以读取stdin；对象身份及已观察版本只能来自快照，不同时接受第二组实体/version参数。
 
@@ -54,3 +54,31 @@ date/datetime为ISO字符串，Decimal为精确字符串；不接受非有限数
 ## 数据库准备与就绪输出
 
 run/migrate的数据库准备集中在Runtime与PostgresStore，migrate不再在CLI分支重复执行迁移，JSON结果为 `{"schema_version": <实际目标版本>}`。doctor在Runtime构造阶段已只读检查结构，成功结果增加 `schema_ready: true` 与 `schema_version`，保留database和原外部检查范围字段；空库、待升级、漂移、历史摘要错误或版本超前在返回成功结果前明确失败。其他维护命令同样只检查，不自动迁移；普通JSON stdout不得夹入准备阶段日志。
+
+## 稳定来源问题
+
+### 1. 范围
+月账单自动补录或日报关联存在候选、歧义、忽略和待重试来源时，使用 transaction_source 对象；不增加批次审批流程。
+
+### 2. 签名
+entity_id 为 report_key:row_key；resolve link 的 --target-id 指远端账本交易，--transaction-id 指内部交易，两者互斥且必须选一个，内部关联只用于来源对象。retry/ignore 不接受目标参数。
+
+### 3. 契约
+集中快照涵盖来源版本、报告指纹、相关来源/交易/任务状态；view 仍只展示。网络读取后再验快照，提交复用来源锁与统一关联规则。人工决定保存在来源行，不随核对投影更新删除。
+
+### 4. 错误矩阵
+| 条件 | 结果 |
+| --- | --- |
+| 两种目标同时存在、错误实体使用内部目标 | 参数阶段拒绝 |
+| 版本或关联集合变化 | Conflict，重新获取快照 |
+| 同报告两行关联同交易 | 拒绝，不破坏真实数量 |
+| UNKNOWN/DISPATCHING | 不重发、不另造交易 |
+
+### 5. 案例
+正常：检查来源候选后 link 指定内部或远端交易；基础：ignore 只影响所选来源，后到独立日报不继承跨报告忽略；错误：把整个报告或全部同金额来源一并忽略。
+
+### 6. 必需测试
+目标互斥、严格JSON、过期快照、网络后状态变化、自动/人工竞争、来源唯一性、重试与核对刷新保留决定。
+
+### 7. 错误与正确
+错误：CLI直接更新关联字段绕过校验。正确：所有动作复用应用层来源关联与 issue_actions，展示和执行资格一致。

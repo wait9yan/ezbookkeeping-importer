@@ -123,7 +123,7 @@ def test_invalid_resolution_parameters_do_not_read_or_write(action, target, acco
 
 def test_recheck_rejects_ineligible_collection_before_any_write():
     store = Mock()
-    with pytest.raises(ImporterError, match="duplicate bank transaction"):
+    with pytest.raises(ImporterError, match="duplicate transaction or unresolved source"):
         request_snapshot_recheck(store, document())
     store.one.assert_not_called()
     store.execute.assert_not_called()

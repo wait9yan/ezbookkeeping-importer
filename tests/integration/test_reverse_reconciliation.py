@@ -122,15 +122,15 @@ def test_concurrent_new_candidate_is_included_in_input_validation(
         nonlocal changed
         if not changed:
             changed = True
+            from ezbookkeeping_importer.application.sources import (
+                create_transaction, lock_source, register_sources,
+            )
+            pipeline.statement(peer, tx, "10.00", key="concurrent-report")
+            report = peer.one("SELECT * FROM bank_report WHERE report_key='concurrent-report'")
             with peer.transaction():
-                peer.execute(
-                    """INSERT INTO bank_transactions(id,report_key,report_row_key,event_type,
-                    occurred_date,occurred_at,time_precision,merchant_name,card_reference,original_amount,original_currency)
-                    SELECT 'AAAAAAAAAAAAAAAA',report_key,'new-candidate',event_type,occurred_date,occurred_at,
-                    time_precision,merchant_name,card_reference,original_amount,original_currency
-                    FROM bank_transactions WHERE id=%s""",
-                    (tx["id"],),
-                )
+                lock_source(peer, report["source_id"])
+                register_sources(peer, report)
+                create_transaction(peer, report, report["content"]["rows"][0])
         return get(target)
 
     monkeypatch.setattr(ledger, "get", insert)

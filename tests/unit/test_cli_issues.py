@@ -90,7 +90,7 @@ def test_action_dispatch_reuses_snapshot_and_dependency_contract(monkeypatch, ac
     monkeypatch.setattr(cli.issue_snapshot, "resolve_snapshot", lambda *a: calls.append(a) or {"action": action})
     assert cli.execute_command(args) == {"action": action}
     assert calls[0][2] == snapshot()
-    assert calls[0][3:] == (action, "已人工核实", target, account)
+    assert calls[0][3:] == (action, "已人工核实", target, account, None)
     assert ("ledger" in command_capabilities("resolve", "rules_only", action=action, account_id=account)) == needs_ledger
     assert closed == [True]
 
@@ -184,3 +184,26 @@ def test_plain_text_resolve_feedback_does_not_claim_completed_write(monkeypatch,
     captured = capsys.readouterr()
     assert "处理决定已保存" in captured.out and "不表示账本写入完成" in captured.out
     assert captured.err == ""
+
+
+def test_source_internal_link_parameters_are_distinct_from_remote_link(monkeypatch):
+    document = snapshot()
+    document["items"][0]["issue"].update(entity_type="transaction_source", entity_id="report:row")
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps(document)))
+    args = parse(["issues", "resolve", "--snapshot", "-", "--action", "link",
+                  "--reason", "同笔交易", "--transaction-id", "internal"])
+    assert args.transaction_id == "internal" and args.target_id is None
+
+
+@pytest.mark.parametrize("tail", [
+    ["--action", "link", "--target-id", "remote", "--transaction-id", "internal"],
+    ["--action", "retry", "--transaction-id", "internal"],
+])
+def test_internal_link_invalid_combinations_fail_before_input(monkeypatch, tail):
+    class NoInput:
+        def read(self):
+            pytest.fail("invalid parameters read stdin")
+    monkeypatch.setattr("sys.stdin", NoInput())
+    with pytest.raises(SystemExit) as error:
+        parse(["issues", "resolve", "--snapshot", "-", "--reason", "核实", *tail])
+    assert error.value.code == 2

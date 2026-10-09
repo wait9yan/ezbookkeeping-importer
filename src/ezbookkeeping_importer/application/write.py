@@ -316,6 +316,21 @@ def record_preflight_failure(store: Store, candidate: dict, error: Exception):
         )
 
 
+def statement_preflight(store, ledger, transaction):
+    decision = transaction.get('import_decision') or {}
+    if decision.get('amount_basis') != 'statement_settlement':
+        return
+    from .sources import report_row, assert_group_evidence, group_markers
+    assert_group_evidence(store, transaction)
+    from .statement_candidates import query_candidates, exclude_group_targets
+    report = store.one('SELECT * FROM bank_report WHERE report_key=%s', (transaction['report_key'],))
+    row = report_row(report, transaction['report_row_key'])
+    candidates, _ = query_candidates(ledger, row, markers=group_markers(store, report, row))
+    candidates = exclude_group_targets(store, report, row, candidates, own_id=transaction['id'])
+    if candidates:
+        raise ImporterError('statement duplicate candidates appeared before dispatch')
+
+
 def write_queued(
     store: Store, ledger: Ledger, *, transaction_ids: frozenset[str] | None = None,
     should_stop=lambda: False,
@@ -358,12 +373,16 @@ def write_queued(
                     complete(store, candidate, current, "already_applied")
                     continue
             validate_target(ledger, payload, target_currency(candidate, transaction))
+            if candidate['task_type'] == 'create':
+                statement_preflight(store, ledger, transaction)
         except LogPersistenceError:
             raise
         except Exception as exc:
             record_preflight_failure(store, candidate, exc)
             continue
         with store.transaction():
+            from .sources import lock_transaction_source
+            lock_transaction_source(store, candidate['bank_transaction_id'])
             transaction = store.one(
                 "SELECT * FROM bank_transactions WHERE id=%s FOR UPDATE",
                 (candidate["bank_transaction_id"],),
@@ -383,6 +402,8 @@ def write_queued(
                 "queued" if job["task_type"] == "create" else "booked"
             ):
                 continue
+            from .sources import assert_group_evidence
+            assert_group_evidence(store, transaction)
             # 登记后必须尽力发送并记录结果；取消只允许发生在登记之前。
             if should_stop():
                 return

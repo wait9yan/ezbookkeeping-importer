@@ -10,6 +10,7 @@ from .issue_interaction import issue_detail, issue_actions
 
 # SQL identifiers are fixed here, never taken from a snapshot or CLI argument.
 ROW_QUERIES = {
+    "transaction_source": "SELECT * FROM transaction_source WHERE report_key=%s AND row_key=%s",
     "email_source_item": "SELECT * FROM email_source_item WHERE id=%s",
     "email": "SELECT * FROM email WHERE id=%s",
     "bank_report": "SELECT * FROM bank_report WHERE report_key=%s",
@@ -65,6 +66,10 @@ def validate_snapshot(document, *, single=False):
             for key in ("entity_id", "code")
         ):
             raise ImporterError("snapshot entity_id and code must be nonempty strings")
+        if issue["entity_type"] == "transaction_source":
+            from .source_issues import source_key
+
+            source_key(issue["entity_id"])
         version = issue["version"]
         if version is not None and (type(version) is not int or version < 0):
             raise ImporterError("snapshot version must be a nonnegative integer or null")
@@ -83,9 +88,20 @@ def validate_snapshot(document, *, single=False):
 
 
 def _state(store, kind, entity_id, *, lock=False):
+    if kind == "transaction_source":
+        from .source_issues import source_state
+
+        return normalize_json(source_state(store, entity_id, lock=lock))
+    if lock and kind == "bank_transactions":
+        from .sources import lock_transaction_source
+
+        lock_transaction_source(store, entity_id)
     if lock and kind == "background_task":
         observed = store.one(ROW_QUERIES[kind], (entity_id,))
         if observed and observed["bank_transaction_id"]:
+            from .sources import lock_transaction_source
+
+            lock_transaction_source(store, observed["bank_transaction_id"])
             # Match the worker's transaction -> task lock order.
             store.one(
                 ROW_QUERIES["bank_transactions"] + " FOR UPDATE", (observed["bank_transaction_id"],)
@@ -137,11 +153,15 @@ def snapshot_issues(store, entity_type=None, entity_id=None, code=None, status=N
 def snapshot_candidates(store, ledger, snapshot, target_id=None):
     item = validate_snapshot(snapshot, single=True)["items"][0]
     issue = item["issue"]
-    if issue["entity_type"] != "bank_transactions":
-        raise ImporterError("candidate comparison requires a bank transaction")
+    if issue["entity_type"] not in {"bank_transactions", "transaction_source"}:
+        raise ImporterError("candidate comparison requires a bank transaction or source")
     assert_snapshot_item(store, item)
     diagnostic = issue["detail"]
     ids = diagnostic.get("candidate_ids", []) if isinstance(diagnostic, dict) else []
+    local_candidates = []
+    if issue["entity_type"] == "transaction_source":
+        local_candidates = [t for t in item["state"]["related"]["transactions"] if t["id"] in ids]
+        ids = [c["id"] for c in diagnostic.get("ledger_candidates", [])]
     if target_id is not None:
         ids = [target_id]
     candidates = [{"id": str(key), "transaction": ledger.get(str(key))} for key in ids]
@@ -152,13 +172,14 @@ def snapshot_candidates(store, ledger, snapshot, target_id=None):
             "issue": issue,
             "decision": item["state"]["row"].get("import_decision") or {},
             "candidates": candidates,
+            "internal_candidates": local_candidates,
             "accounts": accounts,
             "categories": categories,
         }
     )
 
 
-def resolve_snapshot(store, ledger, snapshot, action, reason, target_id=None, account_id=None):
+def resolve_snapshot(store, ledger, snapshot, action, reason, target_id=None, account_id=None, transaction_id=None):
     from .resolve import resolve
 
     item = validate_snapshot(snapshot, single=True)["items"][0]
@@ -167,8 +188,10 @@ def resolve_snapshot(store, ledger, snapshot, action, reason, target_id=None, ac
         raise ImporterError("unsupported resolution action")
     if not isinstance(reason, str) or not reason.strip():
         raise ImporterError("a reason is required")
-    if (action == "link") != bool(target_id):
-        raise ImporterError("target_id is required only for link")
+    if bool(target_id) + bool(transaction_id) != (1 if action == "link" else 0):
+        raise ImporterError("link requires exactly one target_id or transaction_id")
+    if transaction_id and issue["entity_type"] != "transaction_source":
+        raise ImporterError("transaction_id requires a transaction source")
     if account_id is not None and (
         action != "retry" or issue["entity_type"] != "bank_transactions"
     ):
@@ -194,4 +217,5 @@ def resolve_snapshot(store, ledger, snapshot, action, reason, target_id=None, ac
         account_id=account_id,
         code=issue["code"],
         expected_snapshot=item,
+        transaction_id=transaction_id,
     )

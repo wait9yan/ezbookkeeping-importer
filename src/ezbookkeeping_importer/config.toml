@@ -7,6 +7,8 @@ log_level = "INFO"
 
 # 时区
 timezone = "Asia/Shanghai"
+# 月账单仅提供日期时的记账时间，必须明确配置。
+date_only_time = "12:00:00"
 
 # 分类规则：ai\rules_only
 classification_mode = "ai"

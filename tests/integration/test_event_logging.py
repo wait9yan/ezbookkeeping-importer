@@ -111,7 +111,7 @@ def booked_statement(store, tmp_path, settings, ledger, *, currency="CNY"):
 def test_report_rollback_never_emits_acceptance(
     database, tmp_path, settings, monkeypatch, event_log
 ):
-    from ezbookkeeping_importer.application import parse as module
+    from ezbookkeeping_importer.application import sources as module
 
     store = database.store
     identifier = pending_mail(store, tmp_path, settings, count=2)

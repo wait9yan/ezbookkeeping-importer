@@ -5,8 +5,7 @@ import json
 import logging
 import time
 import os
-import re
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -14,7 +13,10 @@ from pathlib import Path
 from ..domain.accounts import decision_currency, legacy_cny_estimate, match_account, recordable
 from ..domain.errors import Conflict, ImporterError, LogPersistenceError
 from ..domain.money import cents
-from .records import source_row
+from ..domain.identity import transaction_id
+from .sources import (match_key, candidate_index, load_transactions, lock_source,
+                      link_source, create_transaction, register_sources)
+from .statement_candidates import query_candidates, exclude_group_targets
 from .ports import Ledger, Store
 from .events import emit, failure_fields
 
@@ -22,47 +24,12 @@ HISTORY_RECHECK_INTERVAL = timedelta(hours=1)
 QUERY_RETRY_INTERVAL = timedelta(minutes=10)
 
 
-def normalized(value: str) -> str:
-    return "".join(value.split()).casefold()
-
-
-def merchant_identity(value: str) -> str:
-    # CMB's observed GOOGLE*CHATGPT descriptor carries a telephone or location
-    # suffix in daily mail; only this concrete template is shortened, never arbitrary prefixes.
-    compact = normalized(value)
-    if re.fullmatch(
-        r"google\*chatgpt(?:[0-9]{3}-[0-9]{3}-[0-9]{4}caus|mountainviewcaus)?", compact
-    ):
-        return "google*chatgpt"
-    return compact
-
-
-def match_key(row: dict) -> tuple:
-    return (
-        row["event_type"],
-        row["occurred_date"],
-        (row["card_reference"] or "")[-4:],
-        Decimal(row["original_amount"]),
-        merchant_identity(row["merchant_raw"]),
-    )
-
-
-def candidate_index(transactions: list[dict]) -> dict[tuple, list[dict]]:
-    index: dict[tuple, list[dict]] = defaultdict(list)
-    for transaction in transactions:
-        index[match_key(source_row(transaction))].append(transaction)
-    return index
-
-
 def snapshot(store: Store, report_key: str) -> tuple[dict, list[dict], str]:
     report = store.one("SELECT * FROM bank_report WHERE report_key=%s", (report_key,))
     if not report or report["report_type"] != "monthly":
         raise ImporterError("reconciliation requires an accepted monthly report")
-    transactions = store.all(
-        """SELECT t.* FROM bank_transactions t JOIN bank_report r ON r.report_key=t.report_key
-        WHERE r.source_id=%s ORDER BY t.id""",
-        (report["source_id"],),
-    )
+    transactions, sources = load_transactions(store, report["source_id"])
+    report["_sources"] = [s for s in sources if s["report_key"] == report_key]
     # Include complete membership and decisions, but not report scheduling timestamps.
     stable = {
         "report": {
@@ -70,6 +37,7 @@ def snapshot(store: Store, report_key: str) -> tuple[dict, list[dict], str]:
             for k in ("report_key", "content_fingerprint", "period_start", "period_end")
         },
         "transactions": transactions,
+        "sources": sources,
     }
     fingerprint = hashlib.sha256(
         json.dumps(stable, sort_keys=True, default=str).encode()
@@ -238,6 +206,14 @@ def compute_results(
         ]
         for row in rows
     }
+    bindings = {s['row_key']: s for s in report.get('_sources', [])}
+    by_id = {t['id']: t for t in transactions}
+    for row in rows:
+        source = bindings.get(row['row_key'], {})
+        if source.get('transaction_id'):
+            candidate_map[row['row_key']] = [by_id[source['transaction_id']]]
+        elif (source.get('last_resolution') or {}).get('action') == 'ignore':
+            candidate_map[row['row_key']] = []
     counts = Counter(t["id"] for group in candidate_map.values() for t in group)
     results = []
     intents = []
@@ -246,9 +222,9 @@ def compute_results(
         candidates = candidate_map[row["row_key"]]
         transaction = None
         match_status = "missing_source_transaction"
-        if row["event_type"] == "statement":
+        if row["event_type"] == "statement" or (bindings.get(row["row_key"], {}).get("last_resolution") or {}).get("action") == "ignore":
             match_status = "out_of_scope"
-        elif len(candidates) > 1 or len(candidates) == 1 and counts[candidates[0]["id"]] > 1:
+        elif not bindings.get(row["row_key"], {}).get("transaction_id") and (len(candidates) > 1 or len(candidates) == 1 and counts[candidates[0]["id"]] > 1):
             match_status = "ambiguous"
         elif len(candidates) == 1:
             transaction = candidates[0]
@@ -271,6 +247,16 @@ def compute_results(
                         transaction["id"],
                     )
                 )
+        if match_status == 'missing_source_transaction':
+            try:
+                candidates, audit = query_candidates(ledger, row, markers=('ebki-' + transaction_id(report['report_key'], row['row_key']),))
+                item['ledger_check_status'] = ('no_candidate' if not candidates else
+                                               'candidate_found' if len(candidates) == 1 else 'ambiguous')
+                item['details'].update(ledger_candidates=candidates, duplicate_query=audit)
+            except LogPersistenceError:
+                raise
+            except Exception as exc:
+                item.update(ledger_check_status='query_failed', last_error=type(exc).__name__)
         results.append(item)
     covered = {t["id"] for group in candidate_map.values() for t in group}
     start, end = report["period_start"], report["period_end"]
@@ -301,12 +287,35 @@ def publish(
     now: datetime,
 ):
     with store.transaction():
+        lock_source(store, report["source_id"])
         latest, _, current_fingerprint = snapshot(store, report["report_key"])
         if (
             latest["reconciliation_version"] != report["reconciliation_version"]
             or current_fingerprint != fingerprint
         ):
             raise Conflict("reconciliation inputs changed; discard stale complete set")
+        register_sources(store, report)
+        for item in results:
+            if item['check_direction'] != 'statement_to_transaction':
+                continue
+            row = next(r for r in report['content']['rows'] if r['row_key'] == item['statement_row_key'])
+            source = store.one('SELECT * FROM transaction_source WHERE report_key=%s AND row_key=%s',
+                               (report['report_key'], row['row_key']))
+            if source and not source['transaction_id'] and item['match_status'] == 'matched':
+                link_source(store, report['report_key'], row['row_key'], item['bank_transaction_id'])
+            elif source and not source['transaction_id'] and item['ledger_check_status'] in {'no_candidate', 'candidate_found', 'ambiguous'}:
+                remaining = exclude_group_targets(store, report, row, item['details']['ledger_candidates'])
+                item['details']['ledger_candidates'] = remaining
+                if remaining:
+                    from .write import has_marker
+                    marker = 'ebki-' + transaction_id(report['report_key'], row['row_key'])
+                    if len(remaining) != 1 or not has_marker(remaining[0], marker):
+                        continue
+                    # Known identity enters the existing UNKNOWN verification path,
+                    # including when its remote fields have changed; it is never resent.
+                tid = create_transaction(store, report, row)
+                item.update(bank_transaction_id=tid, match_status='matched', ledger_check_status='not_checked')
+                item['details']['recovery_status'] = 'pending'
         row_keys = {row["row_key"] for row in report["content"]["rows"]}
         kept = []
         for item in results:

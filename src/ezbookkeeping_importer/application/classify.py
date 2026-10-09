@@ -1,7 +1,7 @@
 import re
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -10,6 +10,7 @@ from ..domain.money import cents
 from ..domain.accounts import AccountMatchError, match_account, decision_currency
 from .ports import Classifier, Ledger, Store
 from .records import source_row
+from .sources import lock_transaction_source
 from .recheck import is_duplicate_recheck
 from .events import emit, blocked, Progress, failure_fields
 
@@ -95,9 +96,16 @@ def classify_expense(transaction: dict, settings, ledger: Ledger, ai: Classifier
 def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -> dict:
     facts = source_row(transaction)
     event = facts["event_type"]
-    if not facts["occurred_at"]:
-        raise ImporterError("source transaction requires an exact occurrence time")
-    instant = datetime.fromisoformat(facts["occurred_at"])
+    statement = transaction.get('_report_type') == 'monthly'
+    if statement and not facts['occurred_at']:
+        if not settings.date_only_time:
+            raise ImporterError('monthly recovery requires explicit date_only_time')
+        instant = datetime.combine(datetime.fromisoformat(facts['occurred_date']).date(),
+                                   time.fromisoformat(settings.date_only_time), ZoneInfo(settings.timezone))
+    else:
+        if not facts['occurred_at']:
+            raise ImporterError('source transaction requires an exact occurrence time')
+        instant = datetime.fromisoformat(facts['occurred_at'])
     if instant.tzinfo is None:
         raise ImporterError("source time must have configured timezone")
     utc_offset = instant.utcoffset()
@@ -106,6 +114,10 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
     offset = int(utc_offset.total_seconds() // 60)
     amount = Decimal(facts["original_amount"])
     currency = facts["original_currency"]
+    if statement:
+        if facts['settlement_currency'] != 'CNY' or facts['settlement_amount'] is None:
+            raise ImporterError('monthly recovery requires explicit CNY settlement')
+        amount, currency = Decimal(facts['settlement_amount']), 'CNY'
     account_audit = None
     classification = None
     if event in {"expense", "refund"}:
@@ -128,6 +140,8 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
         raise ImporterError("unsupported event type")
     source_marker = transaction["source_marker"]
     detail = facts["merchant_raw"]
+    if facts["time_precision"] == "date":
+        detail = "来源仅提供日期 " + detail
     payload.update(
         {
             "time": int(instant.timestamp()),
@@ -138,6 +152,7 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
     )
     validate_target(ledger, payload, currency)
     return {
+        "amount_basis": "statement_settlement" if statement else "original",
         "payload": payload,
         "classification": classification,
         "rate_snapshot": None,
@@ -202,6 +217,8 @@ def _save_duplicate_query_failure(store, transaction, import_decision, exc):
 
 
 def _classify_one(store, settings, ledger, ai, transaction, search_results):
+    report = store.one('SELECT * FROM bank_report WHERE report_key=%s', (transaction['report_key'],))
+    transaction['_report_type'] = report['report_type']
     saved = transaction.get("import_decision") or {}
     rechecking = is_duplicate_recheck(transaction)
     if saved.get("payload") and saved.get("reclassify_requested") and not rechecking:
@@ -224,9 +241,19 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
             else "unmatched"
         )
     )
+    if report['report_type'] == 'monthly':
+        from .sources import report_row, group_evidence, group_markers
+        row = report_row(report, transaction['report_row_key'])
+        import_decision = {**import_decision, 'group_evidence': group_evidence(store, report, row)}
     payload = import_decision["payload"]
     try:
-        candidates = _search_candidates(ledger, payload, search_results)
+        if report['report_type'] == 'monthly':
+            from .statement_candidates import query_candidates, exclude_group_targets
+            candidates, audit = query_candidates(ledger, row, markers=group_markers(store, report, row))
+            candidates = exclude_group_targets(store, report, row, candidates, own_id=transaction['id'])
+            import_decision = {**import_decision, 'duplicate_query': audit}
+        else:
+            candidates = _search_candidates(ledger, payload, search_results)
     except LedgerError as exc:
         return _save_duplicate_query_failure(store, transaction, import_decision, exc)
     exact_sources = [
@@ -240,6 +267,7 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
     if exact_sources:
         recovered = False
         with store.transaction():
+            lock_transaction_source(store, transaction["id"])
             current = store.one(
                 "SELECT * FROM bank_transactions WHERE id=%s FOR UPDATE",
                 (transaction["id"],),
@@ -274,7 +302,7 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
         return ("verification_pending" if recovered else "unchanged"), {
             "classification_count": category
         }
-    duplicates = [
+    duplicates = candidates if report["report_type"] == "monthly" else [
         c
         for c in candidates
         if str(c.get("sourceAccountId")) == str(payload["sourceAccountId"])
@@ -285,6 +313,7 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
         and source_row(transaction)["merchant_raw"] in c.get("comment", "")
     ]
     with store.transaction():
+        lock_transaction_source(store, transaction["id"])
         current = store.one(
             "SELECT * FROM bank_transactions WHERE id=%s FOR UPDATE", (transaction["id"],)
         )
@@ -295,10 +324,12 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
             or current["import_status"] != "pending"
         ):
             return "unchanged", {}
+        from .sources import assert_group_evidence
+        assert_group_evidence(store, {**current, 'import_decision': import_decision})
         # A marker in remote text is not proof of another local source.
         # Read confirmed links inside the decision transaction so an unknown
         # or old marker cannot bypass duplicate review after an empty rebuild.
-        if duplicates:
+        if duplicates and report["report_type"] != "monthly":
             linked_ids = {
                 row["ledger_transaction_id"]
                 for row in store.all(

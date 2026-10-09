@@ -22,6 +22,7 @@ def resolve(
     code: str | None = None,
     expected_issue: dict | None = None,
     expected_snapshot: dict | None = None,
+    transaction_id: str | None = None,
 ):
     if not reason.strip():
         raise ImporterError("a reason is required")
@@ -31,8 +32,15 @@ def resolve(
         "bank_transactions",
         "background_task",
         "bank_report",
+        "transaction_source",
     }:
         raise ImporterError("unsupported resolution entity type")
+    if entity_type == "transaction_source":
+        from .source_resolution import resolve_source
+
+        return resolve_source(store, ledger, entity_id, version, action, reason,
+                              target_id=target_id, transaction_id=transaction_id,
+                              expected_snapshot=expected_snapshot)
     target = None
     corrected_payload = None
     if action == "link" or account_id:
@@ -63,6 +71,16 @@ def resolve(
         "code": code,
     }
     with store.transaction():
+        from .sources import lock_transaction_source
+
+        if entity_type == "bank_transactions":
+            lock_transaction_source(store, entity_id)
+        elif entity_type == "background_task":
+            observed = store.one("SELECT * FROM background_task WHERE id=%s", (entity_id,))
+            if observed and observed["bank_transaction_id"]:
+                lock_transaction_source(store, observed["bank_transaction_id"])
+                store.one("SELECT id FROM bank_transactions WHERE id=%s FOR UPDATE",
+                          (observed["bank_transaction_id"],))
         if expected_snapshot is not None:
             from .issue_snapshot import assert_snapshot_item
 

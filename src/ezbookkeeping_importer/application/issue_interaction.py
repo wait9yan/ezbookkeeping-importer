@@ -6,6 +6,10 @@ from .recheck import RECHECK_CODES
 
 
 def resolution_actions(entity_type, row, *, active=False):
+    if entity_type == "transaction_source":
+        if row["transaction_id"]:
+            return []
+        return ["retry"] if (row.get("last_resolution") or {}).get("action") == "ignore" else ["retry", "link", "ignore"]
     if entity_type == "email_source_item":
         if row["status"] == "failed":
             return ["retry"]
@@ -48,9 +52,14 @@ def issue_detail(store, selected):
         "bank_statement_reconciliation": "id",
     }
     kind = selected["entity_type"]
-    if kind not in tables:
+    if kind == "transaction_source":
+        from .source_issues import source_row
+
+        row = source_row(store, selected["entity_id"])
+    elif kind not in tables:
         raise Conflict("不支持的问题对象")
-    row = store.one(f"SELECT * FROM {kind} WHERE {tables[kind]}=%s", (selected["entity_id"],))
+    else:
+        row = store.one(f"SELECT * FROM {kind} WHERE {tables[kind]}=%s", (selected["entity_id"],))
     if row is None:
         raise Conflict("问题对象已经变化，请刷新后重新选择")
     active = kind == "bank_transactions" and bool(

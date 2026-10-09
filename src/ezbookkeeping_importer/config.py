@@ -51,9 +51,23 @@ class Rule(StrictModel):
 class BusinessSettings(StrictModel):
     mail: BusinessMailSettings
     timezone: str
+    date_only_time: str | None = None
     log_level: str = "INFO"
     rules: tuple[Rule, ...] = ()
     classification_mode: str = "ai"
+
+    @field_validator("date_only_time")
+    @classmethod
+    def valid_date_only_time(cls, value: str | None) -> str | None:
+        if value is not None:
+            from datetime import time
+            try:
+                parsed = time.fromisoformat(value)
+                if parsed.tzinfo is not None or parsed.microsecond:
+                    raise ValueError('invalid date-only time')
+            except ValueError:
+                raise PydanticCustomError("config_date_only_time", "must be a local time") from None
+        return value
 
     @field_validator("log_level")
     @classmethod

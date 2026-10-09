@@ -4,7 +4,7 @@
 
 ## 事务契约
 
-使用 `with store.transaction():` 将决定变化、任务/尝试状态和对应对象当前诊断原子提交。九表模型不保存独立审计或问题表。`store.execute(sql, params)` 中外部值必须通过 `%s` 参数绑定；标识符动态生成仅允许专用 SQL 标识符 API。
+使用 `with store.transaction():` 将决定变化、任务/尝试状态和对应对象当前诊断原子提交。业务模型不保存独立审计或问题表。`store.execute(sql, params)` 中外部值必须通过 `%s` 参数绑定；标识符动态生成仅允许专用 SQL 标识符 API。
 
 任务领取只持有短事务，读取并锁定交易与任务，比较候选版本、任务版本和交易版本一致后改为 `dispatching`。先提交领取与尝试，再进行网络请求；禁止跨网络持有数据库行锁。
 
@@ -33,7 +33,7 @@ run 与 migrate 共用数据库准备与版本迁移，完成后才开始业务�
 
 CREATE DATABASE 使用 psycopg.sql.Identifier；先读取服务器标识符字节限制，拒绝会截断的目标名。并发 DuplicateDatabase 可回连验证，权限及其他错误必须明确失败。建库不在事务内，表迁移仍在事务与迁移锁内。
 
-## 九表业务结构与数据契约
+## 业务结构与数据契约
 
 ### 1. 范围与触发
 
@@ -41,14 +41,14 @@ CREATE DATABASE 使用 psycopg.sql.Identifier；先读取服务器标识符字�
 
 ### 2. 数据库接口
 
-恰好九表：`email_sync_checkpoint`、`email_source_item`、`email`、`bank_report`、`bank_transactions`、`background_task`、`ledger_write_attempt`、`bank_statement_reconciliation`、`schema_version`。所有表、列必须有可由 pg_catalog 读取的简短中文业务标题。COMMENT 只写实体或字段业务名称（如“银行原币金额”“来源认证状态”），不写整句解释、NULL、枚举或算法；详细契约留在设计/规范文档。仅调整标题时直接应用 COMMENT 更新现有库，保留数据和结构。
+当前十表：`email_sync_checkpoint`、`email_source_item`、`email`、`bank_report`、`bank_transactions`、`background_task`、`ledger_write_attempt`、`bank_statement_reconciliation`、`transaction_source`、`schema_version`。所有表、列必须有可由 pg_catalog 读取的简短中文业务标题。COMMENT 只写实体或字段业务名称（如“银行原币金额”“来源认证状态”），不写整句解释、NULL、枚举或算法；详细契约留在设计/规范文档。仅调整标题时直接应用 COMMENT 更新现有库，保留数据和结构。
 
 ### 3. 数据与事务契约
 
 - 来源项位置唯一键为 `(source_id, folder, uid_validity, uid)`；注册与扫描检查点同事务。固定首次上界 `initial_scan_upper_uid`，完成展示由上界内来源项派生，增量不能扩大首次范围。
 - `email.id` 是原件 SHA-256；邮件头 ID 为可空 `header_message_id`。来源认证及人工接纳仅在具体 `email_source_item`；email 不保存 parsed 业务副本。
 - `bank_report` 保存已接纳业务头和 content；规范化内容指纹包括控制总额，排除邮件头及 locator。`email(id,report_key)` 与 `bank_report(source_email_id,report_key)` 延迟复合 FK 验证配对。
-- `bank_transactions` 是日报消费/退款来源事实，月报行不生成交易；原币事实、当前决定、导入结果分别存储。交易经报告/行追溯 source_email_id，不建立交易证据表。
+- `bank_transactions` 保存稳定交易身份、初始来源事实、当前决定和导入结果；月报消费/退款可按 CNY 结算补录。`transaction_source` 是报告行到交易的唯一关联权威；交易原有 report_key/report_row_key 仅为不可变初始身份来源。后到来源不生成第二个可写身份。
 - ID 为 SHA-256(`report_key + ":" + report_row_key`) 前 12 原始字节的 Base64URL 无填充编码；两个键禁止冒号；marker 恒为 ebki- 加 16 字符 ID。
 - `background_task` 统一保存 sync/sync_range/create/settle_amount/settle_currency。`ledger_write_attempt` 记录发送前 unknown、确切请求和决定版本；恢复既有目标可以零尝试完成。
 - 核对完整集合、过期项清理、报告摘要及必要结算任务原子发布；网络期间不持锁，发布前重验完整输入和 reconciliation_version。
@@ -71,7 +71,7 @@ CREATE DATABASE 使用 psycopg.sql.Identifier；先读取服务器标识符字�
 
 ### 6. 必需测试
 
-真实 PostgreSQL 验证九表白名单、中文注释、全部关键 CHECK/FK/唯一性、循环 FK 提交失败、碰撞回滚、来源认证隔离、首次扫描边界、UNKNOWN 和核对并发发布。wheel/sdist 迁移链与权威源逐字节一致，并校验派生契约和链hash。
+真实 PostgreSQL 验证当前表白名单、中文注释、全部关键 CHECK/FK/唯一性、循环 FK 提交失败、碰撞回滚、来源认证隔离、首次扫描边界、UNKNOWN 和核对并发发布。wheel/sdist 迁移链与权威源逐字节一致，并校验派生契约和链hash。
 
 ### 7. 错误与正确做法
 
@@ -180,3 +180,32 @@ PG17/18派生签名再生成一致；旧库带数据、跨版本、新库结果�
 
 ### 7. 错误与正确
 错误：删除已发布001中的枚举或保留运行时还款处理来读历史。正确：003升级清除历史与依赖，运行时仅消费/退款；一次性清理工具不调用Ledger。
+
+## 月账单自动补录与来源关联
+
+### 1. 范围与触发
+已接纳月账单的消费/退款缺少日报来源时，先查询本地与远端候选，零候选且 CNY 账户唯一时自动补录；还款不纳入。
+
+### 2. 数据库签名
+transaction_source 主键 (report_key,row_key)，transaction_id 可空，UNIQUE(report_key,transaction_id) 保证同报告数量；resolution_version 和 last_resolution 保存稳定人工决定。bank_transactions 的初始三元组通过延迟复合 FK 引用来源关系，迁移回填并保持原 ID、marker 及远端绑定。004_transaction_sources.sql 只追加，不修改历史迁移。
+
+### 3. 数据与事务契约
+来源关联是权威，核对结果是可重建观察，原始报告仍保存证据。来源行必须在已接纳报告存在；自动和人工路径共享来源校验、短事务 source 锁及交易→任务顺序，网络期间不持锁。月份重算不得删除人工决定。
+
+### 4. 校验与错误矩阵
+| 条件 | 行为 |
+| --- | --- |
+| 同报告两行指向同一交易 | 唯一约束拒绝，保留真实数量 |
+| 后到日报唯一匹配既有月报交易 | 补充关联，复用身份，不再写入 |
+| 候选歧义或查询失败 | 明确问题，不解释成零候选 |
+| 旧交易初始来源关系不一致 | 延迟 FK 在提交时拒绝 |
+| UNKNOWN 或 dispatching | 核实原操作，不生成替代交易 |
+
+### 5. 正常、基础与错误情形
+正常：月报补录 CNY 后收到日报，关联同一交易；基础：重复同步无新增请求；错误：用日期金额商户设唯一键而吞掉真实多笔。
+
+### 6. 必需测试
+旧数据回填身份不变、FK提交失败、同报告唯一性、同值多笔重启、来源与领取竞争、快照过期、核对刷新不丢决定；认证隔离PG执行，不以静态SQL代替。
+
+### 7. 错误与正确做法
+错误：月报和日报各自生成可写交易后用 ignored 掩盖重复身份。正确：创建前统一解析来源关联，复用现有交易与任务。

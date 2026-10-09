@@ -95,6 +95,7 @@ def build_parser():
                             choices=("retry", "ignore", "accept-source", "link", "confirm-new"))
     resolution.add_argument("--reason", required=True)
     resolution.add_argument("--target-id")
+    resolution.add_argument("--transaction-id", help="将来源关联到已有内部交易，与 --target-id 互斥")
     resolution.add_argument("--account-id")
     _format(resolution, inherited=True)
     return parser
@@ -121,7 +122,7 @@ def parse_command(parser, arguments=None):
         if args.command == "sync":
             validate_scan_range(args.since, args.until)
         operation = getattr(args, "operation", None)
-        for key in ("entity_type", "entity_id", "code", "status", "target_id", "account_id", "snapshot_out"):
+        for key in ("entity_type", "entity_id", "code", "status", "target_id", "transaction_id", "account_id", "snapshot_out"):
             value = getattr(args, key, None)
             if value is not None and not value.strip():
                 parser.error(f"--{key.replace('_', '-')} 不允许为空")
@@ -134,8 +135,8 @@ def parse_command(parser, arguments=None):
         if operation == "resolve":
             if not args.reason.strip():
                 parser.error("--reason 必须是非空处理理由")
-            if bool(args.target_id) != (args.action == "link"):
-                parser.error("link 必须指定 --target-id；其他动作禁止 --target-id")
+            if (bool(args.target_id) + bool(args.transaction_id)) != (1 if args.action == "link" else 0):
+                parser.error("link 必须且只能指定 --target-id 或 --transaction-id；其他动作禁止关联目标")
             if args.account_id is not None and args.action != "retry":
                 parser.error("--account-id 仅用于 retry 修正交易账户")
         if getattr(args, "snapshot", None) is not None:
@@ -144,6 +145,9 @@ def parse_command(parser, arguments=None):
             args.snapshot_document = issue_snapshot.validate_snapshot(
                 document, single=operation in {"candidates", "resolve"}
             )
+            if getattr(args, "transaction_id", None) is not None:
+                if args.snapshot_document["items"][0]["issue"]["entity_type"] != "transaction_source":
+                    parser.error("--transaction-id 仅用于交易来源对象")
             if getattr(args, "account_id", None) is not None:
                 if args.snapshot_document["items"][0]["issue"]["entity_type"] != "bank_transactions":
                     parser.error("--account-id 仅用于交易对象")
@@ -196,7 +200,7 @@ def _execute(args, runtime):
         if operation == "resolve":
             return issue_snapshot.resolve_snapshot(
                 store, runtime.optional_ledger, args.snapshot_document, args.action,
-                args.reason, args.target_id, args.account_id,
+                args.reason, args.target_id, args.account_id, args.transaction_id,
             )
         if operation == "show" or getattr(args, "snapshot_out", None):
             snapshot = issue_snapshot.snapshot_issues(

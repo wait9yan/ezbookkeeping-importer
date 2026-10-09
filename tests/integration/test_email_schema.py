@@ -1,4 +1,4 @@
-"""真实 PostgreSQL 的九表、注释、约束与报告事务边界。"""
+"""真实 PostgreSQL 的十表、注释、约束与报告事务边界。"""
 
 import re
 
@@ -24,10 +24,11 @@ TABLES = {
     "background_task",
     "ledger_write_attempt",
     "bank_statement_reconciliation",
+    "transaction_source",
 }
 
 
-def test_exact_nine_tables_and_all_catalog_comments_are_chinese(database):
+def test_exact_ten_tables_and_all_catalog_comments_are_chinese(database):
     store = database.store
     tables = store.all("""SELECT c.relname,obj_description(c.oid) AS comment FROM pg_class c
         JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -94,7 +95,7 @@ def test_source_status_requires_corresponding_evidence(database, status, extra):
 
 
 def test_short_id_collision_rolls_back_entire_report(database, tmp_path, settings, monkeypatch):
-    from ezbookkeeping_importer.application import parse as module
+    from ezbookkeeping_importer.application import sources as module
 
     store = database.store
     monkeypatch.setattr(module, "transaction_id", lambda *args: "A" * 16)
@@ -190,7 +191,7 @@ def test_missing_active_write_unique_index_is_rejected(database):
 def test_failed_parse_preserves_version_and_header_diagnostics(
     database, tmp_path, settings, monkeypatch, failure
 ):
-    from ezbookkeeping_importer.application import parse as module
+    from ezbookkeeping_importer.application import sources as module
 
     store = database.store
     if failure == "revision":

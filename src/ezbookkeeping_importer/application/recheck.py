@@ -29,6 +29,12 @@ def request_recheck(store: Store, targets: list[dict] | None = None) -> dict[str
     counts = {"scheduled": 0, "already_pending": 0, "skipped": 0}
     for candidate in candidates:
         with store.transaction():
+            from .sources import lock_transaction_source
+
+            if not store.one("SELECT id FROM bank_transactions WHERE id=%s", (candidate["id"],)):
+                counts["skipped"] += 1
+                continue
+            lock_transaction_source(store, candidate["id"])
             current = store.one(
                 "SELECT * FROM bank_transactions WHERE id=%s FOR UPDATE", (candidate["id"],)
             )
@@ -73,7 +79,36 @@ def request_recheck(store: Store, targets: list[dict] | None = None) -> dict[str
                 (current["id"], candidate["decision_version"]),
             )
             counts["scheduled" if changed.rowcount else "skipped"] += 1
+    if targets is None:
+        from .source_issues import source_issues
+
+        source_targets = [item for item in source_issues(store) if item["status"] != "ignored"]
+    else:
+        source_targets = [item for item in targets if item["entity_type"] == "transaction_source"]
+    for selected in source_targets:
+        counts[_request_source_recheck(store, selected)] += 1
     return counts
+
+
+def _request_source_recheck(store, selected):
+    from ..domain.errors import Conflict
+    from .source_issues import source_state
+    from .sources import accept_daily, schedule_source
+
+    with store.transaction():
+        try:
+            state = source_state(store, selected["entity_id"], lock=True)
+        except Conflict:
+            return "skipped"
+        row = state["row"]
+        if (row["resolution_version"] != selected["version"] or row["transaction_id"]
+                or (row["last_resolution"] or {}).get("action") == "ignore"):
+            return "skipped"
+        report = store.one("SELECT * FROM bank_report WHERE report_key=%s", (row["report_key"],))
+        if report["report_type"] == "daily":
+            accept_daily(store, report, row_keys=frozenset({row["row_key"]}))
+        schedule_source(store, report["source_id"])
+        return "scheduled"
 
 
 def request_snapshot_recheck(store: Store, snapshot):
@@ -85,9 +120,12 @@ def request_snapshot_recheck(store: Store, snapshot):
     unique: dict[str, dict] = {}
     for item in document["items"]:
         issue = item["issue"]
-        if issue["entity_type"] != "bank_transactions" or issue["code"] not in RECHECK_CODES:
-            raise ImporterError("recheck snapshot requires duplicate bank transaction issues")
-        key = issue["entity_id"]
+        if not (
+            (issue["entity_type"] == "bank_transactions" and issue["code"] in RECHECK_CODES)
+            or (issue["entity_type"] == "transaction_source" and issue["status"] != "ignored")
+        ):
+            raise ImporterError("recheck snapshot requires duplicate transaction or unresolved source issues")
+        key = issue["entity_type"] + ":" + issue["entity_id"]
         if key in unique and unique[key] != item:
             raise ImporterError("conflicting snapshots for the same transaction")
         unique[key] = item

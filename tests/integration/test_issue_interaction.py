@@ -113,6 +113,7 @@ def test_snapshot_command_retains_account_correction(
         action="retry",
         reason="核实账户",
         target_id=None,
+        transaction_id=None,
         account_id=account,
         code=selected["code"],
         snapshot_document=snapshot_issues(database, "bank_transactions", selected["entity_id"]),
