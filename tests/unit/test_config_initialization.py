@@ -67,7 +67,6 @@ def test_first_cli_command_uses_published_business_defaults(command_environment,
     assert settings.classification_mode == "ai"
     assert settings.mail.source_id == "qq-primary"
     assert settings.mail.rescan_days == 7
-    assert settings.repayment_ownership_confirmed is False
     assert settings.repayments == settings.rules == ()
     assert settings.log_level == "INFO"
     assert not list(Path("data").glob(".config-*.tmp"))

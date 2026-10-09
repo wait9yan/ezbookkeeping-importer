@@ -129,8 +129,6 @@ def decide(transaction: dict, settings, ledger: Ledger, ai: Classifier | None) -
     account_audit = None
     classification = None
     if event == "repayment":
-        if not settings.repayment_ownership_confirmed:
-            raise ImporterError("repayment cross-channel ownership requires configuration")
         if currency != "CNY" or amount <= 0:
             raise ImporterError(
                 "repayment requires one effective CNY account pair and positive amount"

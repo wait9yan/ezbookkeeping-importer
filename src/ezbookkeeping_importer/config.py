@@ -62,7 +62,6 @@ class BusinessSettings(StrictModel):
     mail: BusinessMailSettings
     timezone: str
     date_only_time: time | None = None
-    repayment_ownership_confirmed: bool = False
     log_level: str = "INFO"
     repayments: tuple[RepaymentMapping, ...] = ()
     rules: tuple[Rule, ...] = ()

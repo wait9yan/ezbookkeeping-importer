@@ -161,7 +161,7 @@ def test_current_business_fields_survive_environment_assembly(config, monkeypatc
 
     environment(monkeypatch)
     config.write_text(
-        'date_only_time = 12:34:56\nrepayment_ownership_confirmed = true\n'
+        'date_only_time = 12:34:56\n'
         'log_level = "debug"\n' + BUSINESS + 'rescan_days = 14\n'
         '[[repayments]]\nsource_account_id = "source"\ndestination_account_id = "destination"\n'
         'category_id = "repayment"\ncurrency = "CNY"\nvalid_from = 2026-01-01\n'
@@ -170,7 +170,6 @@ def test_current_business_fields_survive_environment_assembly(config, monkeypatc
     )
     settings = load_settings(str(config))
     assert settings.date_only_time == time(12, 34, 56)
-    assert settings.repayment_ownership_confirmed is True
     assert settings.log_level == "DEBUG"
     assert settings.mail.source_id == "synthetic" and settings.mail.rescan_days == 14
     assert settings.repayments[0].valid_from == date(2026, 1, 1)
@@ -685,3 +684,11 @@ def test_migrate_does_not_print_startup_progress(config, monkeypatch, constructo
     assert runtime.schema_version == 2
     assert capsys.readouterr().out == ''
     runtime.close()
+
+
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_removed_repayment_confirmation_is_rejected(config, monkeypatch, value):
+    environment(monkeypatch)
+    config.write_text(f"repayment_ownership_confirmed = {value}\n" + BUSINESS)
+    with pytest.raises(ConfigurationError, match="repayment_ownership_confirmed: unknown TOML field"):
+        load_settings(str(config), command="status")
