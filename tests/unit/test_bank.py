@@ -4,6 +4,8 @@ from datetime import date
 from decimal import Decimal
 from email.message import EmailMessage
 
+import pytest
+
 from ezbookkeeping_importer.adapters.banks.cmb.parser import BankParser, CONTROL_IDS
 
 
@@ -61,6 +63,58 @@ def test_daily_invalid_row_preserved_and_sign_not_guessed():
     assert len(result.rows) == 1
     assert len(result.issues) == 3
     assert result.rows[0].original_currency == "USD"
+
+
+@pytest.mark.parametrize("currency", ["CNY", "USD"])
+@pytest.mark.parametrize("card_field", ["尾号1234", "卡号4444333322221234"])
+def test_daily_preauthorization_completion_preserves_facts_in_mixed_report(currency, card_field):
+    purchases = [
+        (f"12:00:{second:02d}", "CNY 10.25", "尾号1234 消费 合成商户")
+        for second in range(9)
+    ]
+    completion = ("13:14:15", f"{currency} 123.45", f"{card_field} 预授权完成 合成酒店")
+    parser = BankParser()
+    baseline = parser.parse(daily(purchases))
+    result = parser.parse(daily([*purchases, completion]))
+    assert result.kind == "daily"
+    assert not result.issues
+    assert len(result.rows) == 10
+    assert result.report_key == baseline.report_key
+    assert result.rows[:-1] == baseline.rows
+    row = result.rows[-1]
+    assert row.event_type == "expense"
+    assert row.original_amount == Decimal("123.45")
+    assert row.original_currency == currency
+    assert row.occurred_date == date(2026, 1, 1)
+    assert row.occurred_at is not None
+    assert row.occurred_at.isoformat() == "2026-01-01T13:14:15+08:00"
+    assert row.time_precision == "second"
+    assert row.card_reference == card_field[2:]
+    assert row.merchant_raw == "合成酒店"
+    assert row.extra["bank_event"] == "预授权完成"
+
+
+@pytest.mark.parametrize("amount", ["0.00", "-1.00"])
+def test_daily_preauthorization_completion_rejects_nonpositive_amount(amount):
+    result = BankParser().parse(
+        daily([("12:00:00", f"CNY {amount}", "尾号1234 预授权完成 合成酒店")])
+    )
+    assert not result.rows
+    assert len(result.issues) == 1
+    assert result.issues[0].code == "invalid_daily_row"
+    assert result.issues[0].locator == "daily:1"
+    assert result.issues[0].detail == "日报类型与金额符号不一致"
+
+
+@pytest.mark.parametrize("bank_event", ["预授权", "预授权撤销", "预授权完成撤销", "未知类型"])
+def test_daily_unsupported_preauthorization_and_unknown_types_are_rejected(bank_event):
+    result = BankParser().parse(
+        daily([("12:00:00", "CNY 1.00", f"尾号1234 {bank_event} 合成酒店")])
+    )
+    assert not result.rows
+    assert len(result.issues) == 1
+    assert result.issues[0].code == "invalid_daily_row"
+    assert result.issues[0].detail == "不支持的日报交易类型"
 
 
 def repayment(actual="8.00", state="我行已从您关联的自动还款账户中扣款"):

@@ -187,9 +187,12 @@ class BankParser:
                 )
                 if not amount_match or not detail or not re.fullmatch(r"\d{2}:\d{2}:\d{2}", clock):
                     raise ValueError("日报行字段结构错误")
-                event = {"消费": "expense", "邮购": "expense", "退货": "refund"}.get(
-                    detail.group(2)
-                )
+                event = {
+                    "消费": "expense",
+                    "邮购": "expense",
+                    "预授权完成": "expense",
+                    "退货": "refund",
+                }.get(detail.group(2))
                 if event is None:
                     raise ValueError("不支持的日报交易类型")
                 amount = _money(amount_match.group(2))
