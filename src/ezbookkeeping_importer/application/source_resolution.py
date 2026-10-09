@@ -1,34 +1,38 @@
 """来源人工决定编排，复用共享候选与来源关联契约。"""
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from ..domain.accounts import match_account
 from ..domain.errors import Conflict, ImporterError
+from ..domain.money import cents
 from .issue_interaction import issue_actions
 from .source_issues import source_key, source_state
 from .sources import (
     accept_daily, create_transaction, link_source, load_transactions, report_row,
     schedule_source, source_candidates,
 )
-from .statement_candidates import query_candidates
+from .statement_candidates import statement_windows
 
 
 def _remote_decision(ledger, report, row, target_id):
     if report["report_type"] != "monthly" or row.get("settlement_currency") != "CNY":
         raise ImporterError("external source link requires monthly CNY settlement evidence")
-    candidates, audit = query_candidates(ledger, row)
-    matches = [c for c in candidates if str(c["id"]) == target_id]
-    if len(matches) != 1:
-        raise ImporterError("linked target is not a current statement candidate")
+    # An explicitly selected target need not share the merchant comment used by
+    # automatic discovery. Keep the original date, amount and account constraints.
     target = ledger.get(target_id)
-    if target != matches[0]:
-        # A get response can include fields absent from search. Compare all business fields.
-        if not target or any(target.get(k) != matches[0].get(k) for k in
-                             ("type", "time", "sourceAmount", "sourceAccountId", "categoryId")):
-            raise Conflict("remote candidate changed; query again")
+    windows = statement_windows(row)
+    if (not target or str(target["id"]) != target_id or target.get("type") != 3
+            or not any(start <= target["time"] <= end for start, end in windows)):
+        raise ImporterError("linked target is not eligible for statement association")
     account_id, account_match = match_account(ledger.accounts(), row["card_reference"], "CNY")
     if str(target["sourceAccountId"]) != account_id:
         raise ImporterError("linked target must use the matching CNY account")
+    amount = row.get("settlement_amount")
+    if amount is None or target.get("sourceAmount") != cents(Decimal(amount)):
+        raise ImporterError("linked target must match the signed CNY settlement amount")
+    audit = {"windows": [list(window) for window in windows], "account_ids": [account_id],
+             "observed_at": datetime.now(timezone.utc).isoformat()}
     payload = {key: target[key] for key in
                ("type", "time", "utcOffset", "sourceAmount", "sourceAccountId", "categoryId")}
     return {"amount_basis": "statement_settlement", "target_currency": "CNY",

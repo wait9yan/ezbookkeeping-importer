@@ -196,3 +196,30 @@ def test_daily_source_retry_only_publishes_selected_row(database, action):
         assert request_snapshot_recheck(store, selected)["scheduled"] == 1
     assert store.one("SELECT transaction_id FROM transaction_source WHERE row_key='row-0'")["transaction_id"]
     assert store.one("SELECT transaction_id FROM transaction_source WHERE row_key='row-1'")["transaction_id"] is None
+
+
+@pytest.mark.parametrize("changes", [
+    {"type": 2}, {"sourceAmount": -7000}, {"sourceAmount": 7001},
+    {"time": int(datetime.fromisoformat("2026-02-15T12:00:00+08:00").timestamp())},
+])
+def test_explicit_manual_target_keeps_safety_constraints(database, changes):
+    store, ledger = database.store, pipeline.Ledger()
+    monthly(store)
+    remote(ledger)
+    ledger.records["remote"].update(changes)
+    with pytest.raises(ImporterError):
+        resolve_snapshot(store, ledger, snapshot(store), "link", "显式目标仍需安全校验", target_id="remote")
+    assert store.all("SELECT * FROM bank_transactions") == []
+
+
+def test_explicit_manual_target_can_use_posted_day_without_automatic_candidate(database):
+    from ezbookkeeping_importer.application.statement_candidates import query_candidates
+    store, ledger = database.store, pipeline.Ledger()
+    report = monthly(store)
+    remote(ledger)
+    ledger.records["remote"]["time"] += 86400
+    candidates, _ = query_candidates(ledger, report["content"]["rows"][0])
+    assert candidates == []
+    resolve_snapshot(store, ledger, snapshot(store), "link", "按入账日核实手工账", target_id="remote")
+    assert store.one("SELECT ledger_transaction_id FROM bank_transactions")["ledger_transaction_id"] == "remote"
+    assert ledger.create_calls == []

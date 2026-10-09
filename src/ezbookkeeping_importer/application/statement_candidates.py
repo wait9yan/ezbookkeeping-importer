@@ -1,4 +1,6 @@
-"""月报远端候选查询：日期窗口与同卡各币种仅生成证据，不猜币种。"""
+"""月报远端候选查询：同交易日、同卡人民币金额与商户；操作身份独立核实。"""
+
+import re
 
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -11,7 +13,8 @@ from ..domain.money import cents
 BANK_TIMEZONE = ZoneInfo('Asia/Shanghai')
 
 
-def query_candidates(ledger, row, *, markers=()):
+def statement_windows(row):
+    """保留交易日与入账日相邻窗口，供操作身份恢复和显式目标校验。"""
     windows = []
     for day in {row['occurred_date'], row.get('posted_date') or row['occurred_date']}:
         day = date.fromisoformat(str(day))
@@ -24,14 +27,22 @@ def query_candidates(ledger, row, *, markers=()):
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:
             merged.append((start, end))
+    return merged
+
+
+def query_candidates(ledger, row, *, markers=()):
+    # Ordinary candidates are narrower than the read window for known markers.
+    merged = statement_windows(row)
     reference = row.get('card_reference')
     if not reference:
         raise ImporterError('statement has no card reference')
-    accounts = {str(a['id']): a for a in ledger.accounts() if a.get('type') == 1 and any(
+    accounts = {str(a['id']): a for a in ledger.accounts() if a.get('type') == 1 and a.get('currency') == 'CNY' and any(
         number.endswith(reference) if len(reference) == 4 else number == reference
         for number in card_numbers(a.get('comment') or ''))}
     records = {str(c['id']): c for start, end in merged for c in ledger.search(start, end)}
     candidates = []
+    from .sources import merchant_identity
+    occurred_date = date.fromisoformat(str(row['occurred_date']))
     from .write import has_marker
     for c in records.values():
         if any(has_marker(c, marker) for marker in markers):
@@ -40,8 +51,14 @@ def query_candidates(ledger, row, *, markers=()):
         account = accounts.get(str(c.get('sourceAccountId')))
         if not account or c.get('type') != 3:
             continue
-        amount = row.get('settlement_amount') if account['currency'] == 'CNY' else row['original_amount']
-        if amount is not None and c.get('sourceAmount') == cents(Decimal(amount)):
+        amount = row.get('settlement_amount')
+        same_day = datetime.fromtimestamp(c['time'], BANK_TIMEZONE).date() == occurred_date
+        comment = c.get('comment', '')
+        merchant, marker_count = re.subn(r'(?<![\w-])ebki-[A-Za-z0-9_-]{16}(?![\w-])', '', comment)
+        if marker_count:
+            merchant = merchant.strip().removeprefix('来源仅提供日期 ')
+        if (same_day and merchant_identity(merchant) == merchant_identity(row['merchant_raw'])
+                and amount is not None and c.get('sourceAmount') == cents(Decimal(amount))):
             candidates.append(c)
     return candidates, {'windows': [list(w) for w in merged],
                         'account_ids': sorted(accounts),

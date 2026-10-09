@@ -98,17 +98,14 @@ def test_unique_late_daily_keeps_cny_decision(database, settings, tmp_path):
 
 
 @pytest.mark.parametrize('account,amount', [('account', 7000), ('usd-account', 1000)])
-def test_manual_candidate_blocks_even_different_merchant(database, tmp_path, account, amount):
+def test_different_merchant_or_unknown_foreign_currency_does_not_block(database, tmp_path, account, amount):
     store, ledger = database.store, DateBoundLedger()
     monthly(store)
     ledger.records['manual'] = dict(id='manual', type=3, sourceAccountId=account,
                                     sourceAmount=amount, time=SOURCE_TIME,
                                     comment='完全不同备注')
     reconcile(store, ledger, tmp_path)
-    assert not store.one('SELECT * FROM bank_transactions')
-    result = store.one('SELECT * FROM bank_statement_reconciliation')
-    assert result['ledger_check_status'] == 'candidate_found'
-    assert result['details']['duplicate_query']['windows']
+    assert store.one('SELECT * FROM bank_transactions')
 
 
 def test_query_failure_does_not_create(database, tmp_path):
@@ -132,7 +129,7 @@ def test_missing_date_config_and_preflight_candidate_are_explicit(database, sett
     store.execute("UPDATE bank_transactions SET import_status='pending',import_error=NULL")
     classify_pending(store, settings.model_copy(update={'date_only_time': '12:00:00'}), ledger, None)
     payload = store.one('SELECT import_decision FROM bank_transactions')['import_decision']['payload']
-    ledger.records['manual'] = {**deepcopy(payload), 'id': 'manual', 'comment': '手工记录'}
+    ledger.records['manual'] = {**deepcopy(payload), 'id': 'manual', 'comment': '合成商户'}
     write_queued(store, ledger)
     assert not ledger.create_calls
     assert store.one('SELECT error_code FROM background_task')['error_code'] == 'write_preflight_failed'
@@ -158,7 +155,7 @@ def test_hidden_card_account_remains_duplicate_evidence(database, tmp_path):
     ledger.accounts = lambda: [*original(), {'id': 'hidden', 'type': 1, 'currency': 'CNY',
                                             'hidden': True, 'comment': '4444333322221234'}]
     ledger.records['manual'] = dict(id='manual', type=3, sourceAccountId='hidden', sourceAmount=7000,
-                                    time=SOURCE_TIME, comment='历史手工')
+                                    time=SOURCE_TIME, comment='合成商户')
     reconcile(store, ledger, tmp_path)
     assert not store.one('SELECT * FROM bank_transactions')
 
@@ -225,3 +222,93 @@ def test_identical_group_preserves_unknown_member_without_resending(database, se
     assert [t['import_status'] for t in store.all('SELECT import_status FROM bank_transactions ORDER BY id')] == ['unknown', 'booked']
     write_queued(store, ledger)
     assert len(ledger.create_calls) == 2
+
+
+def blocked_monthly(store, ledger, settings, tmp_path):
+    rows = monthly(store)
+    reconcile(store, ledger, tmp_path)
+    ledger.records['manual'] = dict(id='manual', type=3, sourceAccountId='account',
+                                    sourceAmount=7000, time=SOURCE_TIME,
+                                    comment=rows[0]['merchant_raw'])
+    classify_pending(store, settings.model_copy(update={'date_only_time': '12:00:00'}), ledger, None)
+    return store.one('SELECT * FROM bank_transactions')
+
+
+@pytest.mark.parametrize('change', [None, 'new', 'amount', 'account', 'marker', 'time'])
+def test_confirm_new_scoped_snapshot_shared_by_classification_and_dispatch(
+        database, settings, tmp_path, change):
+    from ezbookkeeping_importer.application.resolve import resolve
+    store, ledger = database.store, DateBoundLedger()
+    transaction = blocked_monthly(store, ledger, settings, tmp_path)
+    assert transaction['import_error']['code'] == 'duplicate_candidates'
+    resolve(store, None, 'bank_transactions', transaction['id'],
+            transaction['decision_version'], 'confirm-new', '两笔独立消费')
+    classify_pending(store, settings.model_copy(update={'date_only_time': '12:00:00'}), ledger, None)
+    assert store.one('SELECT import_status FROM bank_transactions')['import_status'] == 'queued'
+    if change == 'new':
+        ledger.records['new'] = {**ledger.records['manual'], 'id': 'new'}
+    elif change == 'amount':
+        ledger.records['manual']['sourceAmount'] += 1
+    elif change == 'account':
+        ledger.records['manual']['sourceAccountId'] = 'usd-account'
+    elif change == 'time':
+        ledger.records['manual']['time'] += 40 * 86400
+    elif change == 'marker':
+        ledger.records['manual']['comment'] = transaction['source_marker']
+    write_queued(store, ledger)
+    if change is None:
+        assert len(ledger.create_calls) == 1
+        assert store.one('SELECT import_status FROM bank_transactions')['import_status'] == 'booked'
+    else:
+        assert ledger.create_calls == []
+        assert store.one('SELECT error_code FROM background_task')['error_code'] == 'write_preflight_failed'
+
+
+def test_changed_confirmation_candidate_blocks_reclassification(database, settings, tmp_path):
+    from ezbookkeeping_importer.application.resolve import resolve
+    store, ledger = database.store, DateBoundLedger()
+    transaction = blocked_monthly(store, ledger, settings, tmp_path)
+    resolve(store, None, 'bank_transactions', transaction['id'],
+            transaction['decision_version'], 'confirm-new', '两笔独立消费')
+    ledger.records['manual']['sourceAmount'] += 1
+    classify_pending(store, settings.model_copy(update={'date_only_time': '12:00:00'}), ledger, None)
+    assert store.one('SELECT import_status FROM bank_transactions')['import_status'] == 'issue'
+    assert ledger.create_calls == []
+
+
+def test_adjacent_day_legacy_confirmation_needs_no_bypass(database, settings, tmp_path):
+    store, ledger = database.store, DateBoundLedger()
+    transaction = blocked_monthly(store, ledger, settings, tmp_path)
+    ledger.records['manual']['time'] += 86400
+    with store.transaction():
+        store.execute("UPDATE bank_transactions SET import_status='pending',import_decision=%s WHERE id=%s",
+                      ({**transaction['import_decision'], 'allow_new': True}, transaction['id']))
+    classify_pending(store, settings.model_copy(update={'date_only_time': '12:00:00'}), ledger, None)
+    write_queued(store, ledger)
+    assert len(ledger.create_calls) == 1
+
+
+def test_legacy_allow_new_cannot_bypass_same_day_candidate(database, settings, tmp_path):
+    store, ledger = database.store, DateBoundLedger()
+    transaction = blocked_monthly(store, ledger, settings, tmp_path)
+    with store.transaction():
+        store.execute("UPDATE bank_transactions SET import_status='pending',import_decision=%s WHERE id=%s",
+                      ({**transaction['import_decision'], 'allow_new': True}, transaction['id']))
+    classify_pending(store, settings, ledger, None)
+    assert store.one('SELECT import_status FROM bank_transactions')['import_status'] == 'issue'
+
+
+def test_confirmation_query_failure_stops_dispatch(database, settings, tmp_path):
+    from ezbookkeeping_importer.application.resolve import resolve
+    store, ledger = database.store, DateBoundLedger()
+    transaction = blocked_monthly(store, ledger, settings, tmp_path)
+    resolve(store, None, 'bank_transactions', transaction['id'],
+            transaction['decision_version'], 'confirm-new', '两笔独立消费')
+    classify_pending(store, settings, ledger, None)
+
+    def failed_get(identifier):
+        raise LedgerError('candidate lookup failed')
+    ledger.get = failed_get
+    write_queued(store, ledger)
+    assert ledger.create_calls == []
+    assert store.one('SELECT error_code FROM background_task')['error_code'] == 'write_preflight_failed'

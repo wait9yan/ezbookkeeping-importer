@@ -220,7 +220,13 @@ def resolve(
                     },
                 }
             if action == "confirm-new":
-                decision = {**decision, "allow_new": True}
+                snapshots = ((transaction.get("import_error") or {}).get("detail") or {}).get("candidate_snapshots")
+                if not snapshots:
+                    raise ImporterError("candidate evidence missing; recheck before confirming new")
+                confirmed = {c["id"]: c for c in decision.get("confirmed_candidates", [])}
+                confirmed.update({c["id"]: c for c in snapshots})
+                decision = {**decision, "confirmed_candidates": list(confirmed.values())}
+                decision.pop("allow_new", None)
             elif action == "retry" and decision.get("payload"):
                 decision = {**decision, "reclassify_requested": True}
             store.execute(

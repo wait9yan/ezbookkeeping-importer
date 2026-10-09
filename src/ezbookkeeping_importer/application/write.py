@@ -327,7 +327,8 @@ def statement_preflight(store, ledger, transaction):
     row = report_row(report, transaction['report_row_key'])
     candidates, _ = query_candidates(ledger, row, markers=group_markers(store, report, row))
     candidates = exclude_group_targets(store, report, row, candidates, own_id=transaction['id'])
-    if candidates:
+    from .duplicate_confirmation import unconfirmed_candidates
+    if unconfirmed_candidates(ledger, transaction, candidates):
         raise ImporterError('statement duplicate candidates appeared before dispatch')
 
 

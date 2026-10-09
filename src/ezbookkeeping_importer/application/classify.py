@@ -312,6 +312,11 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
         == datetime.fromtimestamp(payload["time"], ZoneInfo(settings.timezone)).date()
         and source_row(transaction)["merchant_raw"] in c.get("comment", "")
     ]
+    from .duplicate_confirmation import candidate_snapshot, unconfirmed_candidates
+    try:
+        duplicates = unconfirmed_candidates(ledger, transaction, duplicates)
+    except LedgerError as exc:
+        return _save_duplicate_query_failure(store, transaction, import_decision, exc)
     with store.transaction():
         lock_transaction_source(store, transaction["id"])
         current = store.one(
@@ -344,9 +349,7 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
             "UPDATE bank_transactions SET import_decision=%s WHERE id=%s",
             (import_decision, transaction["id"]),
         )
-        if duplicates and (
-            rechecking or not (current.get("import_decision") or {}).get("allow_new")
-        ):
+        if duplicates:
             store.execute(
                 "UPDATE bank_transactions SET import_status='issue' WHERE id=%s",
                 (transaction["id"],),
@@ -359,6 +362,7 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
                         "detail": {
                             "decision_version": transaction["decision_version"],
                             "candidate_ids": [str(c["id"]) for c in duplicates],
+                            "candidate_snapshots": [candidate_snapshot(c) for c in duplicates],
                         },
                         "decision_version": transaction["decision_version"],
                     },
