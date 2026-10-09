@@ -219,7 +219,7 @@ run 通过 SIGTERM/SIGINT 停止，不依赖 attach、TTY 或 stdin。程序在�
 
 GitHub Actions 验证 PR、主分支和版本标签，仅正式版本标签触发发布。标签 `vX.Y.Z` 必须与 `pyproject.toml` 版本一致；维护者先更新版本和锁文件、评审合入，再推送标签。已发布版本不覆盖，修复使用新版本。
 
-正式流程在 Linux AMD64/ARM64 上验收实际镜像，通过后推送 `ghcr.io/wait9yan/ezbookkeeping-importer:X.Y.Z` 并更新 latest，再创建自动生成说明的 GitHub Release。镜像记录提交标签与 OCI revision，验收产物传给发布 job，不重新构建。工作流使用 GITHUB_TOKEN，不需要生产连接或个人推送凭据。
+正式流程在 Linux AMD64/ARM64 上验收实际镜像，通过后推送 `ghcr.io/wait9yan/ezbookkeeping-importer:X.Y.Z` 并更新 latest，再创建 GitHub Release，正文使用 `docs/releases/vX.Y.Z.md` 中的升级说明并附加自动生成的变更列表。镜像记录提交标签与 OCI revision，验收产物传给发布 job，不重新构建。工作流使用 GITHUB_TOKEN，不需要生产连接或个人推送凭据。
 
 构建和验收覆盖 CLI、依赖、时区、非 root 数据写入、数据库初始化与恢复。完整迁移链、符号链接目标及匹配的结构契约必须进入安装包，不能仅检查初始 SQL；开发者流程见[数据库结构变更与发布](database-migrations.md)。
 
