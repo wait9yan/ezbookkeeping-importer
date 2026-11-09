@@ -316,20 +316,24 @@ def record_preflight_failure(store: Store, candidate: dict, error: Exception):
         )
 
 
-def statement_preflight(store, ledger, transaction):
+def create_preflight(store, ledger, transaction):
     decision = transaction.get('import_decision') or {}
-    if decision.get('amount_basis') != 'statement_settlement':
-        return
     from .sources import report_row, assert_group_evidence, group_markers
-    assert_group_evidence(store, transaction)
-    from .statement_candidates import query_candidates, exclude_group_targets
-    report = store.one('SELECT * FROM bank_report WHERE report_key=%s', (transaction['report_key'],))
-    row = report_row(report, transaction['report_row_key'])
-    candidates, _ = query_candidates(ledger, row, markers=group_markers(store, report, row))
-    candidates = exclude_group_targets(store, report, row, candidates, own_id=transaction['id'])
+    from .statement_candidates import query_candidates, exclude_group_targets, exclude_linked_targets
+    if decision.get('amount_basis') == 'statement_settlement':
+        assert_group_evidence(store, transaction)
+        report = store.one('SELECT * FROM bank_report WHERE report_key=%s', (transaction['report_key'],))
+        row = report_row(report, transaction['report_row_key'])
+        candidates, _ = query_candidates(ledger, row, markers=group_markers(store, report, row))
+        candidates = exclude_group_targets(store, report, row, candidates, own_id=transaction['id'])
+    else:
+        from .records import source_row
+        candidates, _ = query_candidates(ledger, source_row(transaction), markers=(transaction['source_marker'],),
+                                         decision=decision)
+        candidates = exclude_linked_targets(store, candidates, own_id=transaction['id'])
     from .duplicate_confirmation import unconfirmed_candidates
     if unconfirmed_candidates(ledger, transaction, candidates):
-        raise ImporterError('statement duplicate candidates appeared before dispatch')
+        raise ImporterError('duplicate candidates appeared before dispatch')
 
 
 def write_queued(
@@ -375,7 +379,7 @@ def write_queued(
                     continue
             validate_target(ledger, payload, target_currency(candidate, transaction))
             if candidate['task_type'] == 'create':
-                statement_preflight(store, ledger, transaction)
+                create_preflight(store, ledger, transaction)
         except LogPersistenceError:
             raise
         except Exception as exc:

@@ -1,4 +1,4 @@
-"""普通月报候选严格限定交易日、同卡人民币金额和规范化商户。"""
+"""同卡同交易日按原币/结算金额找候选，商户描述不作排除条件。"""
 from datetime import datetime
 
 import pytest
@@ -38,8 +38,8 @@ def record(**changes):
 
 @pytest.mark.parametrize('changes', [
     {'time': stamp('2026-08-23')}, {'time': stamp('2026-08-25')},
-    {'time': stamp('2026-08-22') - 1}, {'sourceAccountId': 'usd'},
-    {'comment': '不同商户'}, {'sourceAmount': -468}, {'sourceAccountId': 'other'},
+    {'time': stamp('2026-08-22') - 1},
+    {'sourceAmount': -468}, {'sourceAccountId': 'other'},
 ])
 def test_nonmatching_business_fields_are_not_candidates(changes):
     candidates, _ = query_candidates(Ledger([record(**changes)]), row())
@@ -53,7 +53,7 @@ def test_nonmatching_business_fields_are_not_candidates(changes):
 def test_same_day_hidden_cny_account_is_candidate(comment):
     candidates, audit = query_candidates(Ledger([record(comment=comment)]), row())
     assert [c['id'] for c in candidates] == ['existing']
-    assert audit['account_ids'] == ['cny']
+    assert audit['account_ids'] == ['cny', 'usd']
 
 
 def test_own_marker_preserves_edited_account_amount_and_adjacent_date():
@@ -69,3 +69,35 @@ def test_merchant_normalization_and_exact_day_end():
     candidates, _ = query_candidates(Ledger([record(
         time=stamp('2026-08-23') - 1, comment='GOOGLE*CHATGPT')]), source)
     assert len(candidates) == 1
+
+
+@pytest.mark.parametrize('comment', ['不同商户', '', '用户编辑备注'])
+def test_description_does_not_remove_structural_candidate(comment):
+    candidates, _ = query_candidates(Ledger([record(comment=comment)]), row())
+    assert [c['id'] for c in candidates] == ['existing']
+
+
+@pytest.mark.parametrize('account,amount,expected', [
+    ('usd', 2190, True), ('cny', 14727, True),
+    ('usd', 14727, False), ('cny', 2190, False),
+])
+def test_original_usd_and_bank_cny_amounts_are_compared_in_their_own_currency(account, amount, expected):
+    source = {**row(), 'original_amount': '21.90', 'original_currency': None,
+              'settlement_amount': '147.27', 'settlement_currency': 'CNY'}
+    candidates, _ = query_candidates(Ledger([record(sourceAccountId=account, sourceAmount=amount)]), source)
+    assert bool(candidates) is expected
+
+
+def test_explicit_original_currency_conflict_is_not_a_remote_amount_match():
+    source = {**row(), 'original_currency': 'CNY'}
+    candidates, _ = query_candidates(Ledger([record(sourceAccountId='usd')]), source)
+    assert candidates == []
+
+
+def test_legacy_frozen_cny_estimate_remains_duplicate_evidence_before_bank_settlement():
+    source = {**row(), 'original_currency': 'USD', 'original_amount': '10.00',
+              'settlement_amount': None, 'settlement_currency': None}
+    decision = {'payload': {'sourceAmount': 7000}, 'rate_snapshot': {'adoptedRate': '7'}}
+    candidates, _ = query_candidates(Ledger([record(sourceAmount=7000, comment='用户备注')]), source,
+                                     decision=decision)
+    assert [c['id'] for c in candidates] == ['existing']

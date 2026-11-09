@@ -46,3 +46,6 @@ uv build
 PG17/18 × Bookworm/Alpine 对迁移链逐版本再生成契约，检查与提交资源一致；新库与带数据旧库升级到同一结构、每版事务回滚/继续、最新库无CREATE、旧worker排他、脚本改写与结构漂移拒绝。相同 locale 名称不能代替跨发行环境验证。打包校验SQL/hash资源无需生产数据库，但不能替代真实PG再生成证据。
 
 镜像验收通过 `scripts/verify-image.py IMAGE --postgres-image postgres:18-alpine` 指定隔离数据库镜像，默认保留 `postgres:17-bookworm`。每个架构已构建的同一应用镜像分别连接 Bookworm 和 Alpine 验收，通过后才交给发布步骤，不因数据库变体重新构建应用镜像。
+
+## 跨币结算回归的验收层级
+日报/月报同一消费的回归必须运行真实隔离PG来源关联、分类、write与reconcile，断言正常USD→CNY同ID最终状态和create/modify次数。结构候选存在不等于业务完成；描述不同/月报原币为空不能以全部转issue方式让测试“安全通过”。多笔/冲突/UNKNOWN的拒绝路径与正常成功路径必须分别验证。模拟账本/本机PG通过不代表真实生产结算或历史删除已验收。

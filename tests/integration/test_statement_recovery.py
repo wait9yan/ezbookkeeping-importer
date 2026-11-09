@@ -98,14 +98,15 @@ def test_unique_late_daily_keeps_cny_decision(database, settings, tmp_path):
 
 
 @pytest.mark.parametrize('account,amount', [('account', 7000), ('usd-account', 1000)])
-def test_different_merchant_or_unknown_foreign_currency_does_not_block(database, tmp_path, account, amount):
+def test_different_description_and_unknown_original_currency_remain_candidates(database, tmp_path, account, amount):
     store, ledger = database.store, DateBoundLedger()
     monthly(store)
     ledger.records['manual'] = dict(id='manual', type=3, sourceAccountId=account,
                                     sourceAmount=amount, time=SOURCE_TIME,
                                     comment='完全不同备注')
     reconcile(store, ledger, tmp_path)
-    assert store.one('SELECT * FROM bank_transactions')
+    assert not store.one('SELECT * FROM bank_transactions')
+    assert store.one('SELECT ledger_check_status FROM bank_statement_reconciliation')['ledger_check_status'] == 'candidate_found'
 
 
 def test_query_failure_does_not_create(database, tmp_path):

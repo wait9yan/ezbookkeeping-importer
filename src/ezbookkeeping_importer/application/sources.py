@@ -36,14 +36,32 @@ def merchant_identity(value: str) -> str:
 
 def match_key(row: dict) -> tuple:
     return (row['event_type'], str(row['occurred_date']),
-            (row['card_reference'] or '')[-4:], Decimal(row['original_amount']),
-            merchant_identity(row['merchant_raw']))
+            (row['card_reference'] or '')[-4:], Decimal(row['original_amount']))
+
+
+def transaction_rows(transaction):
+    return transaction.get('_source_rows') or [source_row(transaction)]
+
+
+def source_compatible(row, transaction):
+    """未知原币不构成冲突；已由其他来源确认的币种/完整卡号不能丢弃。"""
+    facts = transaction_rows(transaction)
+    currencies = {r['original_currency'] for r in facts if r.get('original_currency')}
+    if transaction.get('original_currency'):
+        currencies.add(transaction['original_currency'])
+    if len(currencies) > 1:
+        return False
+    if row.get('original_currency') and currencies and currencies != {row['original_currency']}:
+        return False
+    references = {r['card_reference'] for r in facts if len(r.get('card_reference') or '') > 4}
+    reference = row.get('card_reference') or ''
+    return len(references) <= 1 and (len(reference) <= 4 or not references or references == {reference})
 
 
 def candidate_index(transactions: list[dict]) -> dict[tuple, list[dict]]:
     index: dict[tuple, list[dict]] = defaultdict(list)
     for transaction in transactions:
-        for row in transaction.get('_source_rows', [source_row(transaction)]):
+        for row in transaction_rows(transaction):
             key = match_key(row)
             if not any(t['id'] == transaction['id'] for t in index[key]):
                 index[key].append(transaction)
@@ -52,9 +70,33 @@ def candidate_index(transactions: list[dict]) -> dict[tuple, list[dict]]:
 
 def source_candidates(rows, transactions):
     index = candidate_index(transactions)
-    return {row['row_key']: [t for t in index.get(match_key(row), [])
-            if row.get('original_currency') is None or t['original_currency'] is None
-            or row['original_currency'] == t['original_currency']] for row in rows}
+    # Known conflicting currency is still evidence to review, never permission to create.
+    return {row['row_key']: [] if row['event_type'] == 'statement' else
+            list(index.get(match_key(row), [])) for row in rows}
+
+
+def automatic_candidates(rows, transactions, bindings):
+    """尊重已绑定数量；描述仅在结构多候选时提供辅助唯一配对。"""
+    candidates = source_candidates(rows, transactions)
+    by_id = {t['id']: t for t in transactions}
+    occupied = {s['transaction_id'] for s in bindings.values() if s.get('transaction_id')}
+    for row in rows:
+        key = row['row_key']
+        bound = bindings.get(key, {})
+        if bound.get('transaction_id'):
+            candidates[key] = [by_id[bound['transaction_id']]]
+        elif (bound.get('last_resolution') or {}).get('action') == 'ignore':
+            candidates[key] = []
+        else:
+            group = [t for t in candidates[key] if t['id'] not in occupied]
+            references = {f['card_reference'] for t in group for f in transaction_rows(t)
+                          if len(f.get('card_reference') or '') > 4}
+            preferred = [t for t in group if source_compatible(row, t) and any(
+                merchant_identity(f['merchant_raw']) == merchant_identity(row['merchant_raw'])
+                for f in transaction_rows(t))]
+            tail_ambiguous = len(row.get('card_reference') or '') <= 4 and len(references) > 1
+            candidates[key] = preferred if len(preferred) == 1 and not tail_ambiguous else group
+    return candidates
 
 
 def load_transactions(store, source_id):
@@ -94,7 +136,8 @@ def link_source(store, report_key, row_key, tid, *, resolution=None):
     lock_source(store, report['source_id'])
     row = report_row(report, row_key)
     transactions, _ = load_transactions(store, report['source_id'])
-    if tid not in {t['id'] for t in source_candidates([row], transactions)[row_key]}:
+    if tid not in {t['id'] for t in source_candidates([row], transactions)[row_key]
+                   if source_compatible(row, t)}:
         raise ImporterError('target transaction does not match source evidence')
     current = store.one('SELECT * FROM transaction_source WHERE report_key=%s AND row_key=%s FOR UPDATE',
                         (report_key, row_key))
@@ -141,10 +184,12 @@ def accept_daily(store, report, *, row_keys: frozenset[str] | None = None):
                    if s['transaction_id'] and s['report_key'] != report['report_key']
                    and store.one('SELECT report_type FROM bank_report WHERE report_key=%s',
                                  (s['report_key'],))['report_type'] == 'monthly'}
-    candidates = source_candidates(report['content']['rows'],
-                                   [t for t in transactions if t['id'] in monthly_ids])
-    counts = Counter(t['id'] for group in candidates.values() for t in group)
     current_sources = {s['row_key']: s for s in sources if s['report_key'] == report['report_key']}
+    candidates = automatic_candidates(report['content']['rows'],
+                                     [t for t in transactions if t['id'] in monthly_ids
+                                      or t['id'] in {s['transaction_id'] for s in current_sources.values()}],
+                                     current_sources)
+    counts = Counter(t['id'] for group in candidates.values() for t in group)
     created = 0
     for row in report['content']['rows']:
         if row_keys is not None and row['row_key'] not in row_keys:
@@ -153,7 +198,7 @@ def accept_daily(store, report, *, row_keys: frozenset[str] | None = None):
         if source and (source['transaction_id'] or (source['last_resolution'] or {}).get('action') == 'ignore'):
             continue
         group = candidates[row['row_key']]
-        if len(group) == 1 and counts[group[0]['id']] == 1:
+        if len(group) == 1 and counts[group[0]['id']] == 1 and source_compatible(row, group[0]):
             link_source(store, report['report_key'], row['row_key'], group[0]['id'])
         elif not group:
             create_transaction(store, report, row)

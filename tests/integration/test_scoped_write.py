@@ -66,6 +66,8 @@ def test_subset_sends_only_selected_transactions_and_default_still_sends_remaini
         if identifier != selected["id"]
     )
     write_queued(store, ledger)
+    # The last equal-value row waits for the preceding send to be verified.
+    write_queued(store, ledger)
     assert len(ledger.create_calls) == 3
     assert all(
         row["import_status"] == "booked"
@@ -142,8 +144,13 @@ def test_scope_also_bounds_legacy_settlement_posts(database, settings, tmp_path)
             "UPDATE background_task SET payload=%s WHERE bank_transaction_id=%s",
             (payload, tx["id"]),
         )
-    write_queued(store, ledger)
+    # Seed all three confirmed historical creates before testing the scoped
+    # settlement; equal-value creates advance one verified worker pass at a time.
+    for _ in bank_transactions:
+        write_queued(store, ledger)
     booked = store.all("SELECT * FROM bank_transactions ORDER BY id")
+    assert all(tx["import_status"] == "booked" for tx in booked)
+    assert len(ledger.create_calls) == 3
     for tx in booked:
         store.execute(
             "INSERT INTO background_task(bank_transaction_id,task_type,decision_version,operation_key,payload,ledger_transaction_id) VALUES (%s,'settle_amount',1,%s,%s,%s)",

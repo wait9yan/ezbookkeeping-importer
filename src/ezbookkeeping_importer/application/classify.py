@@ -254,6 +254,9 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
             import_decision = {**import_decision, 'duplicate_query': audit}
         else:
             candidates = _search_candidates(ledger, payload, search_results)
+            from .statement_candidates import filter_candidates
+            candidates = filter_candidates(ledger.accounts(), source_row(transaction), candidates,
+                                           markers=(transaction['source_marker'],), decision=import_decision)
     except LedgerError as exc:
         return _save_duplicate_query_failure(store, transaction, import_decision, exc)
     exact_sources = [
@@ -302,16 +305,7 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
         return ("verification_pending" if recovered else "unchanged"), {
             "classification_count": category
         }
-    duplicates = candidates if report["report_type"] == "monthly" else [
-        c
-        for c in candidates
-        if str(c.get("sourceAccountId")) == str(payload["sourceAccountId"])
-        and c.get("sourceAmount") == payload["sourceAmount"]
-        and c.get("type") == payload["type"]
-        and datetime.fromtimestamp(c.get("time", 0), ZoneInfo(settings.timezone)).date()
-        == datetime.fromtimestamp(payload["time"], ZoneInfo(settings.timezone)).date()
-        and source_row(transaction)["merchant_raw"] in c.get("comment", "")
-    ]
+    duplicates = candidates
     from .duplicate_confirmation import candidate_snapshot, unconfirmed_candidates
     try:
         duplicates = unconfirmed_candidates(ledger, transaction, duplicates)
@@ -335,16 +329,8 @@ def _classify_one(store, settings, ledger, ai, transaction, search_results):
         # Read confirmed links inside the decision transaction so an unknown
         # or old marker cannot bypass duplicate review after an empty rebuild.
         if duplicates and report["report_type"] != "monthly":
-            linked_ids = {
-                row["ledger_transaction_id"]
-                for row in store.all(
-                    """SELECT ledger_transaction_id FROM bank_transactions
-                    WHERE id<>%s AND ledger_transaction_id IN
-                    (SELECT value FROM jsonb_array_elements_text(%s))""",
-                    (transaction["id"], [str(c["id"]) for c in duplicates]),
-                )
-            }
-            duplicates = [c for c in duplicates if str(c["id"]) not in linked_ids]
+            from .statement_candidates import exclude_linked_targets
+            duplicates = exclude_linked_targets(store, duplicates, own_id=transaction['id'])
         store.execute(
             "UPDATE bank_transactions SET import_decision=%s WHERE id=%s",
             (import_decision, transaction["id"]),

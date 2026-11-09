@@ -14,7 +14,7 @@ from ..domain.accounts import decision_currency, legacy_cny_estimate, match_acco
 from ..domain.errors import Conflict, ImporterError, LogPersistenceError
 from ..domain.money import cents
 from ..domain.identity import transaction_id
-from .sources import (match_key, candidate_index, load_transactions, lock_source,
+from .sources import (automatic_candidates, source_compatible, load_transactions, lock_source,
                       link_source, create_transaction, register_sources)
 from .statement_candidates import query_candidates, exclude_group_targets
 from .ports import Ledger, Store
@@ -196,24 +196,8 @@ def compute_results(
     keys = [r["row_key"] for r in rows]
     if len(keys) != len(set(keys)):
         raise ImporterError("statement row keys are not unique")
-    index = candidate_index(transactions)
-    candidate_map = {
-        row["row_key"]: [] if row["event_type"] == "statement" else [
-            t
-            for t in index.get(match_key(row), [])
-            if row.get("original_currency") is None
-            or row["original_currency"] == t["original_currency"]
-        ]
-        for row in rows
-    }
     bindings = {s['row_key']: s for s in report.get('_sources', [])}
-    by_id = {t['id']: t for t in transactions}
-    for row in rows:
-        source = bindings.get(row['row_key'], {})
-        if source.get('transaction_id'):
-            candidate_map[row['row_key']] = [by_id[source['transaction_id']]]
-        elif (source.get('last_resolution') or {}).get('action') == 'ignore':
-            candidate_map[row['row_key']] = []
+    candidate_map = automatic_candidates(rows, transactions, bindings)
     counts = Counter(t["id"] for group in candidate_map.values() for t in group)
     results = []
     intents = []
@@ -224,7 +208,8 @@ def compute_results(
         match_status = "missing_source_transaction"
         if row["event_type"] == "statement" or (bindings.get(row["row_key"], {}).get("last_resolution") or {}).get("action") == "ignore":
             match_status = "out_of_scope"
-        elif not bindings.get(row["row_key"], {}).get("transaction_id") and (len(candidates) > 1 or len(candidates) == 1 and counts[candidates[0]["id"]] > 1):
+        elif not bindings.get(row["row_key"], {}).get("transaction_id") and (len(candidates) > 1 or len(candidates) == 1 and
+                (counts[candidates[0]["id"]] > 1 or not source_compatible(row, candidates[0]))):
             match_status = "ambiguous"
         elif len(candidates) == 1:
             transaction = candidates[0]

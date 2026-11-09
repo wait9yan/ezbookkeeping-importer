@@ -109,6 +109,10 @@ def test_deleted_candidates_book_once_without_reclassifying(database, tmp_path, 
     assert request_recheck(store) == {"scheduled": 0, "already_pending": 3, "skipped": 0}
 
     worker_cycle(store, tmp_path, context)
+    # Equal-value rows wait for the preceding send's batch-end verification.
+    # A cycle has two write batches, so the third row needs the next cycle.
+    assert len(context.ledger.create_calls) == 2
+    worker_cycle(store, tmp_path, context)
 
     for before, after in zip(
         context.rows, store.all("SELECT * FROM bank_transactions ORDER BY id"), strict=True
@@ -294,7 +298,8 @@ def test_candidate_on_second_http_page_blocks_creation(database, tmp_path, setti
         if len(requests) == 1:
             cursor = str(candidate["time"] * 1000)
             return response_page(
-                [{**candidate, "id": str(i), "comment": "其他商户"} for i in range(1, 51)],
+                [{**candidate, "id": str(i), "sourceAmount": candidate["sourceAmount"] + 1,
+                  "comment": "其他商户"} for i in range(1, 51)],
                 cursor,
             )
         assert request.url.params["max_time"] == str(candidate["time"] * 1000)
@@ -359,7 +364,9 @@ def test_incomplete_http_search_pauses_and_next_manual_recheck_can_recover(
         failing = False
         assert request_recheck(store)["scheduled"] == 3
         worker_cycle(store, tmp_path, context)
-        assert len(requests) == 3
+        # One successful classification query plus a fresh query before
+        # each of the three actual sends, after the two failed page reads.
+        assert len(requests) == 6
         assert len(context.ledger.create_calls) == 3
         assert all(
             row["import_status"] == "booked" for row in store.all("SELECT * FROM bank_transactions")

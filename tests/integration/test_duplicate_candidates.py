@@ -116,9 +116,8 @@ def test_exact_source_marker_still_recovers_without_creation(database, tmp_path,
         {"sourceAmount": 1001},
         {"type": 4},
         {"time": 0},
-        {"comment": "ebki-0123456789abcdef different merchant"},
     ],
-    ids=["account", "amount", "type", "day", "merchant"],
+    ids=["account", "amount", "type", "day"],
 )
 def test_marker_does_not_replace_business_duplicate_conditions(
     database, tmp_path, settings, difference
@@ -135,6 +134,19 @@ def test_marker_does_not_replace_business_duplicate_conditions(
 
     assert store.one("SELECT import_status FROM bank_transactions")["import_status"] == "queued"
     assert store.one("SELECT status FROM background_task")["status"] == "queued"
+
+
+def test_different_description_is_still_a_daily_duplicate_candidate(database, tmp_path, settings):
+    store, ledger = database.store, Ledger()
+    import_daily(store, tmp_path, settings)
+    transaction = store.one('SELECT * FROM bank_transactions')
+    ledger.records['existing'] = {**remote_record(transaction, settings, ledger, marker=''),
+                                  'comment': '完全不同的商户或用户备注'}
+    classify_pending(store, settings, ledger, None)
+    current = store.one('SELECT * FROM bank_transactions')
+    assert current['import_status'] == 'issue'
+    assert current['import_error']['code'] == 'duplicate_candidates'
+    assert ledger.create_calls == []
 
 
 def test_other_local_marker_without_confirmed_link_is_still_duplicate(database, tmp_path, settings):

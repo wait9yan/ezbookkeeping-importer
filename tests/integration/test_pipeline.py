@@ -141,7 +141,7 @@ class Ledger:
         return self.get(payload["id"])
 
 
-def raw_daily(count=1, currency="CNY", message_id="one", reverse=False, amount="10.00"):
+def raw_daily(count=1, currency="CNY", message_id="one", reverse=False, amount="10.00", merchant="合成商户"):
     message = EmailMessage()
     message["Subject"] = "每日信用管家"
     message["Message-ID"] = f"<{message_id}@example.test>"
@@ -150,7 +150,7 @@ def raw_daily(count=1, currency="CNY", message_id="one", reverse=False, amount="
         + currency
         + " "
         + amount
-        + "</b><b>尾号1234 消费 合成商户</b></div>"
+        + "</b><b>尾号1234 消费 " + merchant + "</b></div>"
     ] * count
     if reverse:
         rows.reverse()
