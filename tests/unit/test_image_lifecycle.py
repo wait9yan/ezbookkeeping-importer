@@ -2,6 +2,12 @@
 import importlib.util
 import json
 from pathlib import Path
+from contextlib import nullcontext
+from types import SimpleNamespace
+from datetime import datetime
+from decimal import Decimal
+import ast
+import re
 
 import pytest
 
@@ -58,3 +64,41 @@ def test_root_service_rejected(tmp_path):
     (tmp_path / '1/status').write_text('Uid: 0 0 0 0\nGid: 0 0 0 0\n')
     with pytest.raises(AssertionError):
         snapshot(tmp_path)
+
+
+@pytest.mark.parametrize('phase', ['before', 'after'])
+def test_seeded_transaction_has_report_facts_required_by_real_create_preflight(monkeypatch, phase):
+    """捕获合成seed的实际INSERT参数；真实SQL和强杀路径由镜像验收执行。"""
+    seed_spec = importlib.util.spec_from_file_location('image_seed', lifecycle.FIXTURE / 'seed.py')
+    assert seed_spec is not None and seed_spec.loader is not None
+    seed = importlib.util.module_from_spec(seed_spec)
+    seed_spec.loader.exec_module(seed)
+    calls = []
+    store = SimpleNamespace(transaction=nullcontext, close=lambda: None,
+                            execute=lambda query, params=(): calls.append((query, params)))
+    monkeypatch.setattr(seed, 'PostgresStore', lambda dsn: store)
+    monkeypatch.setenv('EBKI_DATABASE_URL', 'postgresql://synthetic@database.invalid/isolated')
+    seed.seed(phase)
+
+    query, params = next(call for call in calls if 'INSERT INTO bank_transactions' in call[0])
+    columns, values = re.search(r'bank_transactions\s*\((.*?)\)\s*VALUES\s*\((.*?)\)',
+                                query, re.DOTALL).groups()
+    parameters = iter(params)
+    # Model SQL defaults for the nullable source fields, then decode the actual
+    # bound values. This checks seed wiring, not a second application projection.
+    transaction = dict(card_reference=None, occurred_at=None, posted_date=None,
+                       bank_settlement_amount=None, bank_settlement_currency=None, source_details={})
+    transaction.update({column.strip(): next(parameters) if value.strip() == '%s' else ast.literal_eval(value.strip())
+                        for column, value in zip(columns.split(','), values.split(','), strict=True)})
+    report = next(params[-1] for query, params in calls if 'INSERT INTO bank_report' in query)
+    from ezbookkeeping_importer.application.records import source_row
+    from ezbookkeeping_importer.application.statement_candidates import query_candidates
+    facts = source_row(transaction)
+    ledger = SimpleNamespace(
+        accounts=lambda: [{'id': '1', 'type': 1, 'currency': 'CNY', 'comment': '6222000000001234'}],
+        search=lambda start, end: [])
+    assert query_candidates(ledger, facts)[0] == []
+    for field in ('card_reference', 'occurred_at', 'occurred_date', 'original_currency'):
+        assert facts[field] == report['rows'][0][field]
+    assert Decimal(facts['original_amount']) == Decimal(report['rows'][0]['original_amount'])
+    assert int(datetime.fromisoformat(facts['occurred_at']).timestamp()) == transaction['import_decision']['payload']['time']

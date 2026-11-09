@@ -33,10 +33,11 @@ def seed(key):
                           (report, date(2026, 9, 30), key, email, {'rows': [row]}))
             store.execute('UPDATE email SET report_key=%s WHERE id=%s', (report, email))
             store.execute('''INSERT INTO bank_transactions(id,report_key,report_row_key,event_type,
-                occurred_date,time_precision,merchant_name,original_amount,original_currency,
+                occurred_date,occurred_at,time_precision,merchant_name,card_reference,original_amount,original_currency,
                 import_status,import_decision)
-                VALUES (%s,%s,'row','expense',%s,'second','synthetic',100,'CNY','queued',%s)''',
+                VALUES (%s,%s,'row','expense',%s,%s,'second','synthetic',%s,100,'CNY','queued',%s)''',
                           (identifier, report, date(2026, 9, 30),
+                           row['occurred_at'], row['card_reference'],
                            {'payload': payload, 'target_currency': 'CNY'}))
             store.execute('''INSERT INTO transaction_source(report_key,row_key,transaction_id)
                 VALUES (%s,'row',%s)''', (report, identifier))
