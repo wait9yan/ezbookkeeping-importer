@@ -37,6 +37,14 @@ def recordable(account: dict) -> bool:
     return not account.get("hidden", False) and account.get("type") == 1
 
 
+def same_card(account: dict, reference: str) -> bool:
+    """四位只比尾号；完整卡号必须全等，不降级成尾号。"""
+    return any(
+        number.endswith(reference) if len(reference) == 4 else number == reference
+        for number in card_numbers(account.get("comment") or "")
+    )
+
+
 def match_account(accounts: list[dict], reference: str | None, currency: str) -> tuple[str, dict]:
     if not reference or not re.fullmatch(r"(?:[0-9]{4}|[0-9]{12,19})", reference):
         raise ImporterError("card reference must be four trailing digits or a complete card number")
@@ -44,12 +52,7 @@ def match_account(accounts: list[dict], reference: str | None, currency: str) ->
     for account in accounts:
         if not recordable(account):
             continue
-        numbers = card_numbers(account.get("comment") or "")
-        same_card = any(
-            number.endswith(reference) if len(reference) == 4 else number == reference
-            for number in numbers
-        )
-        if same_card and account.get("currency") == currency:
+        if same_card(account, reference) and account.get("currency") == currency:
             matched[str(account["id"])] = account
     if len(matched) != 1:
         raise AccountMatchError(

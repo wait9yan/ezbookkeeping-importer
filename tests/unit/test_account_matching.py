@@ -7,6 +7,7 @@ from ezbookkeeping_importer.domain.accounts import (
     AccountMatchError,
     card_numbers,
     match_account,
+    same_card,
     decision_currency,
 )
 from ezbookkeeping_importer.application.classify import decide, refresh_classification
@@ -145,3 +146,9 @@ def test_legacy_decision_currency_is_cny_not_original_usd():
     assert decision_currency(tx) == "CNY"
     with pytest.raises(ImporterError, match="persisted"):
         decision_currency(transaction())
+
+
+def test_same_card_compares_full_number_exactly_and_four_digits_by_suffix():
+    assert same_card(account("a"), "1234")
+    assert same_card(account("a"), CARD)
+    assert not same_card(account("a"), OTHER)

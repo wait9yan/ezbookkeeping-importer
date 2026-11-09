@@ -76,6 +76,7 @@ def resolve_source(store, ledger, entity_id, version, action, reason, *, target_
                     transaction_id = existing["id"]
                 else:
                     transactions, _ = load_transactions(store, report["source_id"])
+                    # 剩余配对候选可能只是同卡近日另一笔消费；人工指定外部目标已带原因，不再拦截。
                     if source_candidates([row], transactions)[row_key]:
                         raise Conflict("link an existing internal candidate before associating a remote target")
                     transaction_id = create_transaction(store, report, row)

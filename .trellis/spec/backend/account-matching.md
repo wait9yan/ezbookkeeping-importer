@@ -94,3 +94,27 @@
 ### 7. 错误与正确
 错误：把描述不同过滤成无候选，或因币种未明拒绝全部正常结算；只测候选不跑最终修改。
 正确：原金额做结构关联，银行结算额做同ID修改；真正缺失且完整查重无冲突才新增，真正歧义暂停。
+
+## 原交易额对不上时的剩余配对与同卡结算
+
+### 1. 范围与触发
+2026-11-09 用户授权：原交易额或交易日对不上的境外行做剩余配对，并放宽同卡换账户的结算预检。
+精确结构匹配（交易日/卡尾号/类型/原交易额）失败的月报境外行（`extra.country` 非 `CN`）。2026-11-09 生产核实：国内行均为 `CN`，境外为 `US`/`HK`；已关联日报月报交易日无偏差。
+
+### 2. 签名
+`sources.residual_pool(row, transactions, *, missing)`：同卡尾号、同类型、交易日差 ≤ `RESIDUAL_DAYS`(1)、尚无 `missing` 类型（monthly/daily）来源的交易，不比较金额。`residual_candidates(rows, transactions, bindings, candidates) -> (resolved, blocked)`。`unsettled_usd(tx)`：决定币种 USD 且无 settlement_adjustment。`link_eligible(row, tx, transactions, *, missing)` 为 link_source 自动与人工关联的唯一资格判断。`_source_rows` 每项带 `_report_type`。
+
+### 3. 契约
+- 未结算 USD 候选与境外行双向唯一 → matched，走既有 settle_currency 同 ID 改 CNY；details.match_basis=`residual_unsettled_usd`。同日只靠结构字段；跨一天还要求规范化商户一方为另一方前缀（`residual_match`），否则仅暂停。
+- 剩余配对与人工 link 的放宽只适用于境外月报行，以及外币日报对应来源为境外月报行的交易（`has_foreign_monthly`）；国内行仍只认精确候选。放宽只针对金额与交易日，所有路径仍须 `source_compatible`：完整卡号不同或已确认原币不同一律拒绝。
+- `--target-id` 外部关联只在存在精确内部候选时拒绝；剩余配对候选不拦截，否则被暂停的境外行在近日交易其实是另一笔时没有入账出路。
+- 多候选，或无 USD 候选但近日仍有未关联月报的日报交易（含 CNY 日报）→ ambiguous，不查账本、不补录；来源问题为 `source_ambiguous` 并列候选。
+- 外币日报后到、精确无候选：`reverse_daily_pool` 排除本报告已关联与精确候选占用的交易、且跳过已关联或已 ignore 的行后，行与交易双向唯一则关联（保留 CNY 决定）；多个或同报告多行争同一交易则不建，来源问题报 `source_ambiguous` 并列候选；零个才新建。不得因同报告多行而抛错使整份日报失败。国内月报补录不得吞掉后到的外币日报。
+- 结算预检（仅 settle_currency）：远端 type/sourceAmount/time 与冻结 from 一致，账户为可记账、同决定币种的同卡账户时放行（`accounts.same_card`：四位比尾号，完整卡号全等，与 `match_account` 一致）；dispatch 时写 `payload.observed_from_account_id`，adjustment.from 优先用它。远端已是目标状态（already_applied）且从未 dispatch 时无法观察原账户，adjustment.from 保留冻结决定的账户。
+- 不估汇率、不加金额容差；普通 CNY 交易金额差异只报告。
+
+### 4. 错误与正确
+错误：原额不等即判无候选并补录第二笔；账户 ID 变化即永久预检失败。正确：近日未结算 USD 唯一则同 ID 结算，不能唯一则暂停等人工 link。
+
+### 5. 必需测试
+tests/integration/test_usd_residual.py：原额不同、交易日差1天、双候选暂停后手工关联、远距日期拒绝关联、跨天商户无关暂停、国内行拒绝剩余关联、国内补录不吞外币日报、外币日报后到双候选报歧义、CNY 日报金额不同暂停、剩余关联拒绝原币冲突、同报告两笔外币日报争同一月报交易时暂停且日报接纳不失败、ignore 一行后另一行可关联、暂停的境外行可 --target-id 关联手工账、旧暂估结算不放宽换账户、无日报补录一次、月报先到 USD 日报后到、同卡账户迁移放行、他卡/改金额/改时间拦截。

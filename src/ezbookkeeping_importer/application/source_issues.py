@@ -1,7 +1,7 @@
 """稳定来源问题的只读投影与快照；关联规则统一由 sources 提供。"""
 
 from ..domain.errors import Conflict, ImporterError
-from .sources import load_transactions, lock_source, report_row, source_candidates
+from .sources import load_transactions, lock_source, report_row, reverse_daily_pool, source_candidates
 
 
 def source_key(entity_id):
@@ -33,15 +33,19 @@ def source_issues(store):
             AND check_direction='statement_to_transaction'""", (row["report_key"], row["row_key"]))
         ignored = (row["last_resolution"] or {}).get("action") == "ignore"
         status = "ignored" if ignored else "issue"
+        residual_ids = ((observation or {}).get("details") or {}).get("candidate_ids", []) \
+            if (observation or {}).get("match_status") == "ambiguous" else []
+        if row["report_type"] == "daily" and not candidates:
+            residual_ids = [t["id"] for t in reverse_daily_pool(facts, loaded[row["source_id"]])]
         detail = {
-            "candidate_ids": [t["id"] for t in candidates],
+            "candidate_ids": [t["id"] for t in candidates] or residual_ids,
             "observation": observation,
             "last_resolution": row["last_resolution"],
             "ledger_candidates": (observation or {}).get("details", {}).get("ledger_candidates", []),
         }
         if ignored:
             code = "source_ignored"
-        elif candidates:
+        elif candidates or residual_ids:
             code = "source_ambiguous"
         elif observation:
             code = "source_" + observation["ledger_check_status"]

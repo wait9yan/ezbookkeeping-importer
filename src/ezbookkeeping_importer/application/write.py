@@ -7,7 +7,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from ..domain.errors import ImporterError, LedgerRejected, LogPersistenceError
-from ..domain.accounts import decision_currency, legacy_cny_estimate
+from ..domain.accounts import decision_currency, legacy_cny_estimate, same_card
 from .classify import validate_target, validate_accounts
 from .ports import Ledger, Store
 from .events import emit, blocked, failure_fields, failure_identity
@@ -132,7 +132,8 @@ def complete(store: Store, job: dict, current: dict, method: str | None = None):
             }
             adjustment = {
                 "from": {
-                    "account_id": decision["payload"]["sourceAccountId"],
+                    "account_id": job["payload"].get(
+                        "observed_from_account_id", decision["payload"]["sourceAccountId"]),
                     "currency": decision_currency(transaction),
                     "amount": decision["payload"]["sourceAmount"],
                 },
@@ -271,12 +272,26 @@ def prepare_settlement(ledger: Ledger, job: dict, transaction: dict) -> tuple[di
         validate_accounts(ledger, current, target_currency(job, transaction))
         return desired, current
     previous = job["payload"].get("from", transaction["import_decision"]["payload"])
-    if not matches(current, previous):
+    if not matches(current, previous) and not (
+            job["task_type"] == "settle_currency"
+            and same_card_account_moved(ledger, current, previous, transaction)):
         raise ImporterError("settlement account or amount changed remotely")
     validate_accounts(ledger, current, decision_currency(transaction))
     payload = ledger.settlement_payload(current, desired["sourceAmount"])
     payload["sourceAccountId"] = desired["sourceAccountId"]
     return payload, current
+
+
+def same_card_account_moved(ledger: Ledger, current: dict, previous: dict, transaction: dict) -> bool:
+    """仅账户换成同卡另一账户；金额、时间或类型被改仍视为用户修改。
+
+    可见、可记账、同决定币种由调用方随后的 validate_accounts 校验。
+    """
+    if any(str(current.get(k)) != str(previous.get(k)) for k in ("type", "sourceAmount", "time")):
+        return False
+    account = {str(a["id"]): a for a in ledger.accounts()}.get(str(current.get("sourceAccountId")))
+    reference = transaction.get("card_reference") or ""
+    return bool(account and reference and same_card(account, reference))
 
 
 def record_preflight_failure(store: Store, candidate: dict, error: Exception):
@@ -413,7 +428,10 @@ def write_queued(
             if should_stop():
                 return
             frozen = (
-                payload if job["task_type"] == "create" else {**job["payload"], "request": payload}
+                payload if job["task_type"] == "create" else {
+                    **job["payload"], "request": payload,
+                    "observed_from_account_id": str(current["sourceAccountId"]),
+                }
             )
             store.execute(
                 "UPDATE background_task SET status='dispatching',payload=%s,error_code=NULL,last_error=NULL,updated_at=now() WHERE id=%s",

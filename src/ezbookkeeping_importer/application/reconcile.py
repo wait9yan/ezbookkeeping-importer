@@ -15,7 +15,7 @@ from ..domain.errors import Conflict, ImporterError, LogPersistenceError
 from ..domain.money import cents
 from ..domain.identity import transaction_id
 from .sources import (automatic_candidates, source_compatible, load_transactions, lock_source,
-                      link_source, create_transaction, register_sources)
+                      link_source, create_transaction, register_sources, residual_candidates)
 from .statement_candidates import query_candidates, exclude_group_targets
 from .ports import Ledger, Store
 from .events import emit, failure_fields
@@ -198,6 +198,11 @@ def compute_results(
         raise ImporterError("statement row keys are not unique")
     bindings = {s['row_key']: s for s in report.get('_sources', [])}
     candidate_map = automatic_candidates(rows, transactions, bindings)
+    # 原交易额对不上的境外行：同卡近日唯一未结算 USD 日报直接配对并走同 ID 结算；
+    # 近日仍有未关联日报时只暂停，不能当作缺失消费补录。
+    residual, blocked = residual_candidates(rows, transactions, bindings, candidate_map)
+    for key, transaction in residual.items():
+        candidate_map[key] = [transaction]
     counts = Counter(t["id"] for group in candidate_map.values() for t in group)
     results = []
     intents = []
@@ -208,6 +213,8 @@ def compute_results(
         match_status = "missing_source_transaction"
         if row["event_type"] == "statement" or (bindings.get(row["row_key"], {}).get("last_resolution") or {}).get("action") == "ignore":
             match_status = "out_of_scope"
+        elif row["row_key"] in blocked:
+            match_status = "ambiguous"
         elif not bindings.get(row["row_key"], {}).get("transaction_id") and (len(candidates) > 1 or len(candidates) == 1 and
                 (counts[candidates[0]["id"]] > 1 or not source_compatible(row, candidates[0]))):
             match_status = "ambiguous"
@@ -217,7 +224,9 @@ def compute_results(
         item = result_item(
             "statement_to_transaction", row["row_key"], transaction, match_status, now
         )
-        item["details"]["candidate_ids"] = [t["id"] for t in candidates]
+        item["details"]["candidate_ids"] = blocked.get(row["row_key"]) or [t["id"] for t in candidates]
+        if row["row_key"] in residual:
+            item["details"]["match_basis"] = "residual_unsettled_usd"
         if transaction:
             _, accounts = compare_ledger(ledger, transaction, item, row, now)
             intent = settlement_intent(transaction, report, row, accounts, item)
