@@ -63,15 +63,6 @@ __pycache__/
 coverage.xml
 htmlcov/
 
-# Trellis 的个人任务、账务研究与会话状态；共享规范/工具仍入库
-/.trellis/tasks/
-/.trellis/workspace/
-/.trellis/.runtime/
-/.trellis/.developer
-/.trellis/.current-task
-/.trellis/.backup-*/
-/.codex/settings.local.json
-
 # 编辑器、系统与临时文件
 /.idea/
 /.vscode/
